@@ -1,0 +1,5 @@
+#! /bin/sh
+
+JINX_MAJOR_VER=0.11
+JINX_DEBIAN_SNAPSHOT=20261020T000000Z
+JINX_BASE_PACKAGES="meson ninja-build clang lld llvm python3 git"

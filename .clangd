@@ -1,0 +1,9 @@
+If:
+  PathMatch: devel/mlibc/.*
+CompileFlags:
+  CompilationDatabase: build/compdb/mlibc
+---
+If:
+  PathMatch: devel/vex/.*
+CompileFlags:
+  CompilationDatabase: build/compdb/vex-kernel
