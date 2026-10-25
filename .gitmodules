@@ -1,3 +1,7 @@
 [submodule "kernel"]
 	path = kernel
 	url = https://github.com/vex-os/kernel.git
+[submodule "mlibc"]
+	path = mlibc
+	url = https://github.com/vex-os/mlibc.git
+	branch = vex-sysdeps

@@ -1,1 +1,17 @@
 #! /bin/sh
+
+version=0.0.2
+revision=2
+source_dir=kernel
+
+# Vex calls x86_64 amd64
+case ${JINX_ARCH} in
+	x86_64) vex_arch=amd64 ;;
+	*) vex_arch=${JINX_ARCH} ;;
+esac
+
+package() {
+	mkdir -p "${dest_dir}${prefix}/include"
+	cp -r "${source_dir}/kernel/include/usr/vex" "${dest_dir}${prefix}/include/"
+	cp -r "${source_dir}/kernel/arch/${vex_arch}/include/usr/arch" "${dest_dir}${prefix}/include/"
+}
