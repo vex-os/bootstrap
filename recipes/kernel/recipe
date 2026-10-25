@@ -1,1 +1,24 @@
 #! /bin/sh
+
+version=0.0.2
+revision=2
+source_dir=kernel
+
+# Vex calls x86_64 amd64
+case ${JINX_ARCH} in
+	x86_64) vex_arch=amd64 ;;
+	*) vex_arch=${JINX_ARCH} ;;
+esac
+
+configure() {
+	meson setup build --cross-file "${source_dir}/cross/${vex_arch}-clang.ini" -Dktest=false "${source_dir}" # FIXME: gcc?
+}
+
+build() {
+	ninja -C build -j${parallelism}
+}
+
+package() {
+	# FIXME: put this into image-esp
+	echo "LOL"
+}
