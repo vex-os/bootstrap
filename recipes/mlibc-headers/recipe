@@ -1,1 +1,9 @@
 #! /bin/sh
+
+version=0
+revision=1
+bootstrap_pkg=yes
+
+package() {
+	mkdir -p "${dest_dir}${prefix}/include"
+}

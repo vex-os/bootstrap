@@ -1,1 +1,43 @@
 #! /bin/sh
+
+version=15.2.0
+revision=1
+tarball_url="https://ftp.gnu.org/gnu/gcc/gcc-${version}/gcc-${version}.tar.xz"
+tarball_sha256="438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e"
+hostdeps="binutils gmp mpfr mpc"
+builddeps="mlibc"
+imagedeps="build-essential"
+
+target="${JINX_ARCH}-vex"
+
+# The kernel links with ld and does not use libgcc
+# hence no multilib. libstdc++ has its own recipe
+# because it needs mlibc to compile properly
+configure() {
+	"${source_dir}/configure" \
+		--prefix="${prefix}" \
+		--target="${target}" \
+		--with-sysroot="${sysroot}" \
+		--with-gmp="${prefix}" \
+		--with-mpfr="${prefix}" \
+		--with-mpc="${prefix}" \
+		--enable-languages=c,c++ \
+		--enable-initfini-array \
+		--disable-shared \
+		--disable-multilib \
+		--disable-nls \
+		--disable-werror \
+		--disable-libsanitizer \
+		--disable-libssp \
+		--disable-libquadmath \
+		--disable-libgomp \
+		--disable-libvtv
+}
+
+build() {
+	make -j${parallelism} all-gcc all-target-libgcc
+}
+
+package() {
+	make install-gcc install-target-libgcc DESTDIR="${dest_dir}"
+}

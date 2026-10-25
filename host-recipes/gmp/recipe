@@ -1,0 +1,24 @@
+#! /bin/sh
+
+version=6.3.0
+revision=1
+tarball_url="https://ftp.gnu.org/gnu/gmp/gmp-${version}.tar.xz"
+tarball_sha256="a3c2b80201b89e68616f4ad30bc66aee4927c3ce50e33929ca819d5c43538898"
+imagedeps="build-essential m4"
+
+# The configure tests of GMP 6.3.0 are not valid C23
+configure() {
+	CC="gcc -std=gnu17" \
+	"${source_dir}/configure" \
+		--prefix="${prefix}" \
+		--disable-shared \
+		--enable-static
+}
+
+build() {
+	make -j${parallelism}
+}
+
+package() {
+	make install DESTDIR="${dest_dir}"
+}

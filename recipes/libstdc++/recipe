@@ -1,0 +1,24 @@
+#! /bin/sh
+
+revision=1
+from_host_source="gcc"
+hostdeps="gcc binutils"
+deps="mlibc"
+
+target="${JINX_ARCH}-vex"
+
+configure() {
+	"${source_dir}/libstdc++-v3/configure" \
+		--host="${target}" \
+		--prefix="${prefix}" \
+		--disable-multilib \
+		--disable-nls
+}
+
+build() {
+	make -j${parallelism}
+}
+
+package() {
+	make install DESTDIR="${dest_dir}"
+}

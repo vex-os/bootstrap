@@ -1,1 +1,27 @@
 #! /bin/sh
+
+version=2.45
+revision=2
+tarball_url="https://ftp.gnu.org/gnu/binutils/binutils-${version}.tar.xz"
+tarball_sha256="c50c0e7f9cb188980e2cc97e4537626b1672441815587f1eab69d2a1bfbef5d2"
+imagedeps="build-essential"
+
+target="${JINX_ARCH}-vex"
+
+configure() {
+	"${source_dir}/configure" \
+		--prefix="${prefix}" \
+		--target="${target}" \
+		--with-sysroot="${sysroot}" \
+		--disable-nls \
+		--disable-werror \
+		--disable-gprofng
+}
+
+build() {
+	make -j${parallelism}
+}
+
+package() {
+	make install DESTDIR="${dest_dir}"
+}

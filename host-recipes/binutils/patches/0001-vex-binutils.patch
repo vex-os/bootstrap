@@ -1,0 +1,50 @@
+diff --git a/bfd/config.bfd b/bfd/config.bfd
+index 4e5a838..2b30589 100644
+--- a/bfd/config.bfd
++++ b/bfd/config.bfd
+@@ -681,7 +681,7 @@ case "${targ}" in
+     targ_selvecs="i386_elf32_vec iamcu_elf32_vec"
+     want64=true
+     ;;
+-  x86_64-*-elf* | x86_64-*-rtems* | x86_64-*-fuchsia | x86_64-*-genode*)
++  x86_64-*-elf* | x86_64-*-rtems* | x86_64-*-fuchsia | x86_64-*-genode* | x86_64-*-vex*)
+     targ_defvec=x86_64_elf64_vec
+     targ_selvecs="i386_elf32_vec iamcu_elf32_vec x86_64_elf32_vec"
+     case "${targ}" in
+diff --git a/config.sub b/config.sub
+index 4aaae46..9acc26a 100755
+--- a/config.sub
++++ b/config.sub
+@@ -2135,6 +2135,7 @@ case $os in
+ 	| uwin* \
+ 	| uxpv* \
+ 	| v88r* \
++	| vex* \
+ 	|*vms* \
+ 	| vos* \
+ 	| vsta* \
+diff --git a/gas/configure.tgt b/gas/configure.tgt
+index 7c81bff..a363028 100644
+--- a/gas/configure.tgt
++++ b/gas/configure.tgt
+@@ -232,6 +232,7 @@ case ${generic_target} in
+   i386-*-fuchsia*)			fmt=elf ;;
+   i386-*-haiku*)			fmt=elf em=haiku ;;
+   i386-*-genode*)			fmt=elf ;;
++  i386-*-vex*)				fmt=elf ;;
+   i386-*-bsd*)				fmt=aout em=386bsd ;;
+   i386-*-netbsd*-gnu* | \
+   i386-*-knetbsd*-gnu | \
+diff --git a/ld/configure.tgt b/ld/configure.tgt
+index ea01ccf..f645a6f 100644
+--- a/ld/configure.tgt
++++ b/ld/configure.tgt
+@@ -1032,7 +1032,7 @@ x86_64-*-netbsd* | x86_64-*-openbsd*)
+ 			tdir_elf_i386=`echo ${targ_alias} | \
+ 			    sed -e 's/x86_64/i386/' -e 's/aout//'`
+ 			;;
+-x86_64-*-elf* | x86_64-*-rtems* | x86_64-*-fuchsia* | x86_64-*-genode*)
++x86_64-*-elf* | x86_64-*-rtems* | x86_64-*-fuchsia* | x86_64-*-genode* | x86_64-*-vex*)
+ 			targ_emul=elf_x86_64
+ 			targ_extra_emuls="elf_i386 elf_iamcu elf32_x86_64"
+ 			targ_extra_libpath="elf_i386 elf_iamcu elf32_x86_64"
