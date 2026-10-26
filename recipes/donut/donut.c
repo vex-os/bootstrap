@@ -2,6 +2,8 @@
  * The program makes the terminal itself: it binds the first free serial port to the
  * tty line discipline, and takes the new terminal as its standard input and output. */
 
+/* This is like, fully vibecoded, I couldn't be bothered to de-obfuscate the original donut */
+
 #include <dirent.h>
 #include <fcntl.h>
 #include <math.h>
