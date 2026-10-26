@@ -1,0 +1,30 @@
+#!/bin/sh
+# Writes compile_commands.json files that clangd can read, from the ones of the Jinx builds
+# Usage: scripts/compdb
+# The output goes to compdb/<recipe> in the build directory (BUILD_DIR, default: build)
+set -eu
+
+script_dir="$(CDPATH= cd -- "$(dirname -- "${0}")" && pwd)"
+source_dir="$(dirname -- "${script_dir}")"
+
+build_dir="${BUILD_DIR:-build}"
+
+case "${build_dir}" in
+    /*) ;;
+    *) build_dir="${source_dir}/${build_dir}" ;;
+esac
+
+# Jinx runs the compilers in a container with the build directory as /build_dir and the source
+# directory as /base_dir. Some paths climb up to /base_dir from the build of the recipe
+for database in "${build_dir}"/builds/*/build/compile_commands.json; do
+    test -f "${database}" || continue
+
+    recipe="$(basename -- "$(dirname -- "$(dirname -- "${database}")")")"
+    mkdir -p "${build_dir}/compdb/${recipe}"
+
+    sed \
+        -e "s#\(\.\./\)\{1,\}base_dir#${source_dir}#g" \
+        -e "s#/base_dir#${source_dir}#g" \
+        -e "s#/build_dir#${build_dir}#g" \
+        "${database}" > "${build_dir}/compdb/${recipe}/compile_commands.json"
+done
