@@ -3,6 +3,7 @@
 # Usage: scripts/qemu-x86_64.sh [qemu arguments]
 # The first serial port of the machine is this terminal, and the kernel log is on the screen.
 # Ctrl-A X quits QEMU, Ctrl-A C opens its monitor. The build directory is BUILD_DIR, default: build
+# The accelerator is QEMU_ACCEL, default: tcg. Example: QEMU_ACCEL=whpx,kernel-irqchip=off
 set -eu
 
 export LANG=C.UTF-8
@@ -35,6 +36,10 @@ else
     qemu=qemu-system-x86_64
 fi
 
+# The serial terminal is faster under TCG than under WHPX. Each port access of the guest
+# leaves the hypervisor, and TCG does it in process
+accel="${QEMU_ACCEL:-tcg}"
+
 # The terminal would otherwise edit the line and echo it before QEMU sees it, and the guest
 # echoes it again. Ctrl-C goes to the guest. Enter stays a newline (icrnl), as a lone
 # carriage return never reaches the guest through the stdio of QEMU
@@ -45,6 +50,8 @@ if test -t 0; then
 fi
 
 "${qemu}" \
+    -accel "${accel}" \
+    -cpu qemu64,-svm \
     -bios "${firmware}" \
     -drive "format=raw,file=${disk}" \
     -serial mon:stdio \
