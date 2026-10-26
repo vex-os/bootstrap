@@ -1,1 +1,35 @@
 #! /bin/sh
+
+version=0.0.1
+revision=6
+deps="base"
+imagedeps="e2fsprogs"
+
+# The size is the first power of two, in MiB, from the minimum up that holds twice the content
+fit_size() {
+	content_kib=$(du -sk "${1}" | cut -f1)
+	size_mib=${2}
+
+	while test $((size_mib * 1024)) -lt $((content_kib * 2)); do
+		size_mib=$((size_mib * 2))
+	done
+
+	echo "${size_mib}"
+}
+
+# The /boot of the system is the ESP, so it stays
+# empty here. In the container the user that runs
+# Jinx is root, and so owns all the files, as the system expects
+package() {
+	rm -rf root
+	mkdir root
+	cp -a "${sysroot}/." root/
+	rm -rf root/boot root/images
+	mkdir root/boot
+
+	size_mib=$(fit_size root 32)
+
+	mkdir -p "${dest_dir}/images"
+	mke2fs -q -F -t ext2 -b 4096 -I 256 -O none,filetype,sparse_super,large_file,ext_attr,resize_inode,dir_index \
+		-E root_owner=0:0 -d root "${dest_dir}/images/root.img" "${size_mib}M"
+}
