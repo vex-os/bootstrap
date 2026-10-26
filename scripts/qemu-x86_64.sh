@@ -59,6 +59,12 @@ run_qemu() {
         "${@}"
 }
 
+# The guest hides the cursor, and nothing shows it again when QEMU closes from outside
+restore_terminal() {
+    stty "${saved_terminal}"
+    printf '\033[?25h'
+}
+
 if command -v "${putty}" > /dev/null 2>&1; then
     # Telnet makes PuTTY send each key at once and without local echo. The guest starts only
     # after PuTTY connects, so the terminal gets all of the boot. PuTTY cannot connect before
@@ -82,7 +88,9 @@ else
     # carriage return never reaches the guest through the stdio of QEMU
     if test -t 0; then
         saved_terminal="$(stty -g)"
-        trap 'stty "${saved_terminal}"' EXIT
+        trap restore_terminal EXIT
+        # The shell runs the EXIT trap on a signal only through exit
+        trap 'exit 1' HUP INT TERM
         stty -icanon -echo -isig -ixon
     fi
 
