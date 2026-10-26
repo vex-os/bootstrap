@@ -1,7 +1,7 @@
 #! /bin/sh
 
 version=0.0.1
-revision=12
+revision=13
 deps="image-esp image-root"
 imagedeps="fdisk"
 
