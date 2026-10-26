@@ -1,20 +1,25 @@
 #! /bin/sh
 
 version=15.2.0
-revision=1
+revision=3
 tarball_url="https://ftp.gnu.org/gnu/gcc/gcc-${version}/gcc-${version}.tar.xz"
 tarball_sha256="438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e"
 hostdeps="binutils gmp mpfr mpc"
-builddeps="mlibc"
+deps="mlibc-headers"
 imagedeps="build-essential"
 
 target="${JINX_ARCH}-vex"
 
-# The kernel links with ld and does not use libgcc
-# hence no multilib. libstdc++ has its own recipe
-# because it needs mlibc to compile properly
+# The kernel links with ld and does not use libgcc hence no multilib.
+# A static libgcc needs only the headers of mlibc libstdc++ has its
+# own recipe because it needs mlibc to compile properly
+# The host compiler defaults to C++20, where u8 literals have the type char8_t
+# The libcody of this GCC version does not build with that
+# The standard goes into CXX because libcody adds -std=c++11 after CXXFLAGS
 configure() {
 	"${source_dir}/configure" \
+		CXX="g++ -std=gnu++17" \
+		CXX_FOR_BUILD="g++ -std=gnu++17" \
 		--prefix="${prefix}" \
 		--target="${target}" \
 		--with-sysroot="${sysroot}" \
@@ -22,6 +27,7 @@ configure() {
 		--with-mpfr="${prefix}" \
 		--with-mpc="${prefix}" \
 		--enable-languages=c,c++ \
+		--enable-threads=posix \
 		--enable-initfini-array \
 		--disable-shared \
 		--disable-multilib \
