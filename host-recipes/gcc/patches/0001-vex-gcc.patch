@@ -28,7 +28,7 @@ new file mode 100644
 index 0000000..800eddb
 --- /dev/null
 +++ b/gcc/config/vex.h
-@@ -0,0 +1,40 @@
+@@ -0,0 +1,44 @@
 +/* Base configuration file for all Vex targets.
 +
 +This file is part of GCC.
@@ -69,6 +69,10 @@ index 0000000..800eddb
 +
 +#undef  LIB_SPEC
 +#define LIB_SPEC "-lc"
++
++/* The headers of mlibc and the library of C++ expect the GNU extensions.  */
++#undef  CPLUSPLUS_CPP_SPEC
++#define CPLUSPLUS_CPP_SPEC "-D_GNU_SOURCE %(cpp)"
 diff --git a/gcc/config.gcc b/gcc/config.gcc
 index 087aaa7..9d1caa5 100644
 --- a/gcc/config.gcc
