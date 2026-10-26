@@ -1,9 +1,9 @@
 #! /bin/sh
 
-version=15.2.0
-revision=5
+version=16.2.0
+revision=1
 tarball_url="https://ftp.gnu.org/gnu/gcc/gcc-${version}/gcc-${version}.tar.xz"
-tarball_sha256="438fd996826b0c82485a29da03a72d71d6e3541a83ec702df4271f6fe025d24e"
+tarball_sha256="e6738e29597f733270731aa90600f37ffdc045079dfc27ec7e8192cc81085c3e"
 hostdeps="binutils gmp mpfr mpc"
 deps="mlibc-headers"
 imagedeps="build-essential"
