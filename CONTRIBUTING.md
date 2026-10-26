@@ -34,7 +34,7 @@ scripts/jinx-wrap <command>      # any other jinx command, e.g. 'rebuild kernel'
 
 - A recipe is `recipes/<name>/recipe`. A host tool is `host-recipes/<name>/recipe`. The directory name is the name of the recipe.
 - Jinx takes `ARCH` as `x86_64`. Vex calls the same architecture `amd64`, so a recipe maps `JINX_ARCH` to the Vex name when it needs one.
-- A recipe for code that lives in this repository or in `devel/` uses `source_dir`. Jinx does not patch or copy such a tree. Change the code in its submodule, not with patches.
+- A recipe for code that lives in this repository or in a submodule uses `source_dir`. Jinx does not patch or copy such a tree. Change the code in its submodule, not with patches.
 - Raise `revision` when a recipe changes and the version does not. Jinx rebuilds a recipe only when `<version>_<revision>` changes.
 - Do not edit `jinx-working-patch.patch`. `jinx regen` writes it.
 
@@ -61,7 +61,7 @@ requirement. Never restate what the code next to it does.
 
 - Make one logical change per commit.
 - The subject line is `<area>: <summary>`:
-  - Take the area from the directories that the commit changes: `scripts:` for a change only under `scripts/`, `vex:` or `mlibc:` for a new commit of a submodule in `devel/`, the name of the recipe for a change only in that recipe. Use `general:` only when a commit spans several areas. Keep unrelated areas out of a commit instead of widening its area.
+  - Take the area from the directories that the commit changes: `scripts:` for a change only under `scripts/`, `kernel:` or `mlibc:` for a new commit of a submodule, the name of the recipe for a change only in that recipe. Use `general:` only when a commit spans several areas. Keep unrelated areas out of a commit instead of widening its area.
   - Write the summary in lowercase and in the imperative mood (`scripts: let configure.sh take an architecture`), with no trailing period.
 - Keep all lines within 72 columns.
 - Most commits need no body. Write one only when the reader needs something that the subject and the diff do not show: why the change is done this way, or an outside contract. Do not list the changed files.
