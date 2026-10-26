@@ -1,1 +1,30 @@
 #! /bin/sh
+
+version=0.0.1
+revision=3
+deps="kernel limine base-files"
+imagedeps="dosfstools mtools"
+
+# The size is the first power of two, in MiB, from the minimum up that holds twice the content
+fit_size() {
+	content_kib=$(du -sk "${1}" | cut -f1)
+	size_mib=${2}
+
+	while test $((size_mib * 1024)) -lt $((content_kib * 2)); do
+		size_mib=$((size_mib * 2))
+	done
+
+	echo "${size_mib}"
+}
+
+# The packages put the files of the ESP into /boot
+package() {
+	size_mib=$(fit_size "${sysroot}/boot" 32)
+
+	mkdir -p "${dest_dir}/images"
+	esp="${dest_dir}/images/esp.img"
+
+	dd if=/dev/zero of="${esp}" bs=1M count="${size_mib}" status=none
+	mkfs.fat -F 16 "${esp}" > /dev/null
+	mcopy -s -i "${esp}" "${sysroot}"/boot/* ::/
+}
