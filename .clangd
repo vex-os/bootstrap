@@ -1,9 +1,8 @@
+# The database comes from scripts/compdb, as Jinx builds mlibc in a container
+# The kernel has its own database in kernel/build, which clangd finds by itself
 If:
-  PathMatch: devel/mlibc/.*
+  PathMatch: mlibc/.*
 CompileFlags:
   CompilationDatabase: build/compdb/mlibc
----
-If:
-  PathMatch: devel/vex/.*
-CompileFlags:
-  CompilationDatabase: build/compdb/vex-kernel
+  # The Vex GCC defines it for C++ itself, and clangd does not know that
+  Add: [-D_GNU_SOURCE]
