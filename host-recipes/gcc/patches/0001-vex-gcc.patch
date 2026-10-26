@@ -28,7 +28,7 @@ new file mode 100644
 index 0000000..800eddb
 --- /dev/null
 +++ b/gcc/config/vex.h
-@@ -0,0 +1,44 @@
+@@ -0,0 +1,40 @@
 +/* Base configuration file for all Vex targets.
 +
 +This file is part of GCC.
@@ -69,10 +69,6 @@ index 0000000..800eddb
 +
 +#undef  LIB_SPEC
 +#define LIB_SPEC "-lc"
-+
-+/* The headers of mlibc have their own extern "C" guards.  */
-+#undef  NO_IMPLICIT_EXTERN_C
-+#define NO_IMPLICIT_EXTERN_C 1
 diff --git a/gcc/config.gcc b/gcc/config.gcc
 index 087aaa7..9d1caa5 100644
 --- a/gcc/config.gcc
