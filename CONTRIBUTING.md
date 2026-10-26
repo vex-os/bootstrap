@@ -20,9 +20,9 @@ You can use AI tools, but a human drives the work:
 ## Building
 
 ```sh
-scripts/configure.sh -a x86_64   # creates the build directory
-scripts/build.sh                 # builds all recipes
-scripts/jinx-wrap <command>      # any other jinx command, e.g. 'rebuild kernel'
+scripts/jinx-init -a x86_64 # creates the build directory
+scripts/jinx-wrap build     # builds all recipes
+scripts/jinx-wrap <command> # any other jinx command, e.g. 'rebuild kernel'
 ```
 
 - The build directory is `build/`. Set `BUILD_DIR` to use another one.
@@ -62,7 +62,7 @@ requirement. Never restate what the code next to it does.
 - Make one logical change per commit.
 - The subject line is `<area>: <summary>`:
   - Take the area from the directories that the commit changes: `scripts:` for a change only under `scripts/`, `kernel:` or `mlibc:` for a new commit of a submodule, the name of the recipe for a change only in that recipe. Use `general:` only when a commit spans several areas. Keep unrelated areas out of a commit instead of widening its area.
-  - Write the summary in lowercase and in the imperative mood (`scripts: let configure.sh take an architecture`), with no trailing period.
+  - Write the summary in lowercase and in the imperative mood (`scripts: let jinx-init take an architecture`), with no trailing period.
 - Keep all lines within 72 columns.
 - Most commits need no body. Write one only when the reader needs something that the subject and the diff do not show: why the change is done this way, or an outside contract. Do not list the changed files.
 - Write the body in ASD-STE100 Simplified Technical English: short sentences, one statement per sentence, active voice, present tense.
@@ -74,7 +74,7 @@ Trailers go in the last paragraph of the message, after a blank line.
 - A commit that has material AI help gets an `Assisted-by:` trailer in the form `AGENT_NAME:MODEL_VERSION`. Use the full lowercase model identifier, not only the model family:
 
   ```
-  scripts: let configure.sh take an architecture
+  scripts: let jinx-init take an architecture
 
   Assisted-by: Claude:claude-opus-5-5
   ```

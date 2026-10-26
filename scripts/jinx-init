@@ -1,5 +1,5 @@
 #!/bin/sh
-# Usage: scripts/configure.sh [-b build_dir] [-a arch]
+# Usage: scripts/jinx-init [-b build_dir] [-a arch]
 set -eu
 
 cd "$(dirname "$(dirname "$(realpath "${0}")")")"

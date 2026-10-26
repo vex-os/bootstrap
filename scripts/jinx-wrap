@@ -27,7 +27,7 @@ if test "${1:-}" = "init"; then
 fi
 
 if ! test -f "${build_dir}/.jinx-parameters"; then
-    echo "jinx-wrap: ${build_dir} is not initialised, run scripts/configure.sh first" >&2
+    echo "jinx-wrap: ${build_dir} is not initialised, run scripts/jinx-init first" >&2
     exit 1
 fi
 
