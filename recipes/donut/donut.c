@@ -251,17 +251,42 @@ static void render(float angle_a, float angle_b, char* shades, float* depths)
     }
 }
 
-// Each row has its own cursor position, and the frame goes out in one write. A newline after
-// the last row, or more rows than the terminal has, would scroll the picture on every frame
-static void show(const char* shades)
+// Each byte to the serial port costs the guest a port access, so only the changed span of each
+// row goes out, after its own cursor position. A newline after the last row, or more rows than
+// the terminal has, would scroll the picture on every frame
+static void show(const char* shades, char* shown)
 {
     char frame[SCREEN_HEIGHT * (ROW_PREFIX + SCREEN_WIDTH)];
     size_t size = 0;
 
     for(int row = 0; row < SCREEN_HEIGHT; ++row) {
-        size += snprintf(frame + size, ROW_PREFIX, "\033[%d;1H", row + 1);
-        memcpy(frame + size, shades + row * SCREEN_WIDTH, SCREEN_WIDTH);
-        size += SCREEN_WIDTH;
+        const char* line = shades + row * SCREEN_WIDTH;
+        char* old_line = shown + row * SCREEN_WIDTH;
+        int first = 0;
+        int last = SCREEN_WIDTH - 1;
+
+        while(first < SCREEN_WIDTH && line[first] == old_line[first]) {
+            ++first;
+        }
+
+        if(first == SCREEN_WIDTH) {
+            continue;
+        }
+
+        while(line[last] == old_line[last]) {
+            --last;
+        }
+
+        size_t span = (size_t)(last - first + 1);
+
+        size += snprintf(frame + size, ROW_PREFIX, "\033[%d;%dH", row + 1, first + 1);
+        memcpy(frame + size, line + first, span);
+        memcpy(old_line + first, line + first, span);
+        size += span;
+    }
+
+    if(size == 0) {
+        return;
     }
 
     fwrite(frame, 1, size, stdout);
@@ -272,6 +297,7 @@ int main(void)
 {
     char terminal[PATH_SIZE];
     char shades[SCREEN_CELLS];
+    char shown[SCREEN_CELLS];
     float depths[SCREEN_CELLS];
 
     mount_devices();
@@ -283,6 +309,7 @@ int main(void)
     set_line_discipline();
     fputs(HIDE_CURSOR CLEAR_SCREEN, stdout);
     fflush(stdout);
+    memset(shown, ' ', sizeof(shown));
 
     float angle_a = 0;
     float angle_b = 0;
@@ -290,7 +317,7 @@ int main(void)
     // The first process of the system must not exit, as the kernel panics then
     for(;;) {
         render(angle_a, angle_b, shades, depths);
-        show(shades);
+        show(shades, shown);
 
         angle_a += 0.04f;
         angle_b += 0.02f;
