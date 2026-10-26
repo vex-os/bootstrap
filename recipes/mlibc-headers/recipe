@@ -1,9 +1,37 @@
 #! /bin/sh
 
-version=0
+version=7.0.0.git
 revision=1
+source_dir=mlibc
+deps="kernel-headers"
 bootstrap_pkg=yes
 
+# The installed abi-bits headers include the kernel headers
+# The compiler is only used to set up Meson, as no code builds here
+configure() {
+	cat > cross.ini <<EOT
+[binaries]
+c = 'clang'
+cpp = 'clang++'
+
+[host_machine]
+system = 'vex'
+cpu_family = '${JINX_ARCH}'
+cpu = '${JINX_ARCH}'
+endian = 'little'
+EOT
+
+	meson setup build \
+		--cross-file cross.ini \
+		--prefix="${prefix}" \
+		-Dheaders_only=true \
+		"${source_dir}"
+}
+
+build() {
+	ninja -C build -j${parallelism}
+}
+
 package() {
-	mkdir -p "${dest_dir}${prefix}/include"
+	DESTDIR="${dest_dir}" ninja -C build install
 }
