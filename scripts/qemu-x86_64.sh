@@ -1,8 +1,9 @@
 #!/bin/sh
 # Builds the image and boots it in QEMU
 # Usage: scripts/qemu-x86_64.sh [qemu arguments]
-# The first serial port of the machine is this terminal, and the kernel log is on the screen.
-# Ctrl-A X quits QEMU, Ctrl-A C opens its monitor. The build directory is BUILD_DIR, default: build
+# The first serial port of the machine is PuTTY when it is installed, else this terminal.
+# The kernel log is on the screen. Ctrl-A X quits QEMU, Ctrl-A C opens its monitor.
+# The build directory is BUILD_DIR, default: build
 # The accelerator is QEMU_ACCEL, default: tcg. Example: QEMU_ACCEL=whpx,kernel-irqchip=off
 set -eu
 
@@ -30,33 +31,60 @@ firmware="${source_dir}/kernel/contrib/edk2/RELEASEX64_OVMF.fd"
 
 if test -f "/proc/sys/fs/binfmt_misc/WSLInterop"; then
     qemu=qemu-system-x86_64.exe
+    putty=putty.exe
     disk="$(wslpath -a -w "${disk}")"
     firmware="$(wslpath -a -w "${firmware}")"
 else
     qemu=qemu-system-x86_64
+    putty=putty
 fi
 
 # The serial terminal is faster under TCG than under WHPX. Each port access of the guest
 # leaves the hypervisor, and TCG does it in process
 accel="${QEMU_ACCEL:-tcg}"
 
-# The terminal would otherwise edit the line and echo it before QEMU sees it, and the guest
-# echoes it again. Ctrl-C goes to the guest. Enter stays a newline (icrnl), as a lone
-# carriage return never reaches the guest through the stdio of QEMU
-if test -t 0; then
-    saved_terminal="$(stty -g)"
-    trap 'stty "${saved_terminal}"' EXIT
-    stty -icanon -echo -isig -ixon
-fi
+terminal_port=4444
 
-"${qemu}" \
-    -accel "${accel}" \
-    -cpu qemu64,-svm \
-    -bios "${firmware}" \
-    -drive "format=raw,file=${disk}" \
-    -serial mon:stdio \
-    -machine type=q35 \
-    -vga std \
-    -m 512M \
-    -smp 4 \
-    "${@}"
+run_qemu() {
+    "${qemu}" \
+        -accel "${accel}" \
+        -cpu qemu64,-svm \
+        -bios "${firmware}" \
+        -drive "format=raw,file=${disk}" \
+        -serial "${serial}" \
+        -machine type=q35 \
+        -vga std \
+        -m 512M \
+        -smp 4 \
+        "${@}"
+}
+
+if command -v "${putty}" > /dev/null 2>&1; then
+    # Telnet makes PuTTY send each key at once and without local echo. The guest starts only
+    # after PuTTY connects, so the terminal gets all of the boot. PuTTY cannot connect before
+    # QEMU listens, and QEMU tells that on its standard error
+    serial="mon:telnet:127.0.0.1:${terminal_port},server=on,wait=on"
+
+    run_qemu "${@}" 2>&1 | while IFS= read -r line; do
+        printf '%s\n' "${line}" >&2
+
+        case "${line}" in
+            *"waiting for connection"*)
+                "${putty}" -telnet 127.0.0.1 -P "${terminal_port}" > /dev/null 2>&1 &
+                ;;
+        esac
+    done
+else
+    serial=mon:stdio
+
+    # The terminal would otherwise edit the line and echo it before QEMU sees it, and the guest
+    # echoes it again. Ctrl-C goes to the guest. Enter stays a newline (icrnl), as a lone
+    # carriage return never reaches the guest through the stdio of QEMU
+    if test -t 0; then
+        saved_terminal="$(stty -g)"
+        trap 'stty "${saved_terminal}"' EXIT
+        stty -icanon -echo -isig -ixon
+    fi
+
+    run_qemu "${@}"
+fi
