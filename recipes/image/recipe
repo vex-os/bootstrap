@@ -1,1 +1,36 @@
 #! /bin/sh
+
+version=0.0.1
+revision=6
+deps="image-esp image-root"
+imagedeps="fdisk"
+
+# Sizes of the sectors, and of the gap that the table of partitions leaves at the start
+sector_size=512
+first_sector=2048
+
+# Both parts are whole MiB, so the partitions start on a MiB boundary
+package() {
+	esp="${sysroot}/images/esp.img"
+	root="${sysroot}/images/root.img"
+	disk="${dest_dir}/images/disk.img"
+
+	esp_sectors=$(($(stat -c %s "${esp}") / sector_size))
+	root_sectors=$(($(stat -c %s "${root}") / sector_size))
+	root_start=$((first_sector + esp_sectors))
+
+	# The backup table of the GPT goes after the last partition
+	total_sectors=$((root_start + root_sectors + first_sector))
+
+	mkdir -p "${dest_dir}/images"
+	truncate -s $((total_sectors * sector_size)) "${disk}"
+
+	sfdisk --quiet --force "${disk}" > /dev/null <<EOT
+label: gpt
+start=${first_sector},size=${esp_sectors},type=C12A7328-F81F-11D2-BA4B-00A0C93EC93B,name=ESP
+start=${root_start},size=${root_sectors},type=0FC63DAF-8483-4772-8E79-3D69D8477DE4,name=ROOT
+EOT
+
+	dd if="${esp}" of="${disk}" bs=${sector_size} seek=${first_sector} conv=notrunc status=none
+	dd if="${root}" of="${disk}" bs=${sector_size} seek=${root_start} conv=notrunc status=none
+}
