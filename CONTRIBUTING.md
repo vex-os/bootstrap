@@ -23,11 +23,13 @@ You can use AI tools, but a human drives the work:
 scripts/jinx-init -a x86_64 # creates the build directory
 scripts/jinx-wrap build     # builds all recipes
 scripts/jinx-wrap <command> # any other jinx command, e.g. 'rebuild kernel'
+scripts/compdb              # refreshes the compilation databases for clangd
 ```
 
 - The build directory is `build/`. Set `BUILD_DIR` to use another one.
 - `scripts/jinx-wrap` runs `jinx` from `PATH`. If there is none, it runs `scripts/jinx-fallback`.
 - Clone with `--recurse-submodules`, or run `git submodule update --init` after the clone.
+- Jinx builds in a container, so run `scripts/compdb` after a build. It writes the databases for clangd to `compdb/` in the build directory.
 - `JINX_MAJOR_VER` in `Jinxfile` must match the major version of the `jinx` that runs. Change both together.
 
 ## Recipes
