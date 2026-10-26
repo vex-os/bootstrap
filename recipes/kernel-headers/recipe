@@ -1,7 +1,7 @@
 #! /bin/sh
 
 version=0.0.2
-revision=2
+revision=3
 source_dir=kernel
 
 # Vex calls x86_64 amd64
