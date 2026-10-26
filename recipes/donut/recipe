@@ -1,0 +1,19 @@
+#! /bin/sh
+
+version=0.0.1
+revision=7
+source_dir=recipes/donut
+hostdeps="gcc binutils"
+builddeps="mlibc kernel-headers"
+
+target="${JINX_ARCH}-vex"
+
+# The libc is static for now, so only the build needs it
+build() {
+	"${target}-gcc" -O2 -Wall -Wextra -o donut "${source_dir}/donut.c" -lm
+}
+
+package() {
+	mkdir -p "${dest_dir}${prefix}/bin"
+	cp donut "${dest_dir}${prefix}/bin/donut"
+}
