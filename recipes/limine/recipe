@@ -1,0 +1,17 @@
+#! /bin/sh
+
+version=0.0.1
+revision=1
+source_dir=kernel/contrib/limine
+
+case ${JINX_ARCH} in
+	x86_64) efi_name=BOOTX64.EFI ;;
+	aarch64) efi_name=BOOTAA64.EFI ;;
+	riscv64) efi_name=BOOTRISCV64.EFI ;;
+esac
+
+# Firmware boots the file of this name from the ESP
+package() {
+	mkdir -p "${dest_dir}/boot/EFI/BOOT"
+	cp "${source_dir}/${efi_name}" "${dest_dir}/boot/EFI/BOOT/${efi_name}"
+}
