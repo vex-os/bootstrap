@@ -1,1 +1,60 @@
 #! /bin/sh
+
+version=7.0.0.git
+revision=2
+source_dir=mlibc
+hostdeps="gcc binutils"
+deps="kernel-headers"
+source_allow_network=yes
+
+# Vex calls x86_64 amd64
+case ${JINX_ARCH} in
+	x86_64) vex_arch=amd64 ;;
+	*) vex_arch=${JINX_ARCH} ;;
+esac
+
+prepare() {
+	meson subprojects download freestnd-c-hdrs freestnd-cxx-hdrs frigg libsmarter
+}
+
+# The C library does not exist yet, so the compiler links without it
+# The C++ headers come from freestnd-cxx-hdrs, as libstdc++ does not exist yet either
+# The sysroot has the headers of the kernel, but mlibc builds with -nostdinc
+# and so reads them from the tree of the kernel
+configure() {
+	cat > cross.ini <<EOT
+[binaries]
+c = '${JINX_ARCH}-vex-gcc'
+cpp = '${JINX_ARCH}-vex-g++'
+ar = '${JINX_ARCH}-vex-ar'
+strip = '${JINX_ARCH}-vex-strip'
+
+[built-in options]
+c_link_args = ['-nostdlib']
+cpp_link_args = ['-nostdlib']
+
+[host_machine]
+system = 'vex'
+cpu_family = '${JINX_ARCH}'
+cpu = '${JINX_ARCH}'
+endian = 'little'
+EOT
+
+	meson setup build \
+		--cross-file cross.ini \
+		--prefix="${prefix}" \
+		--libdir=lib \
+		--buildtype=debugoptimized \
+		-Ddefault_library=static \
+		-Duse_freestnd_hdrs=enabled \
+		-Dvex_kernel_headers="${base_dir}/kernel/kernel/include/usr,${base_dir}/kernel/kernel/arch/${vex_arch}/include/usr" \
+		"${source_dir}"
+}
+
+build() {
+	ninja -C build -j${parallelism}
+}
+
+package() {
+	DESTDIR="${dest_dir}" ninja -C build install
+}
