@@ -1,1 +1,11 @@
 #! /bin/sh
+
+version=0.0.1
+revision=3
+source_dir=base-files
+
+# The mount point of devfs, which nothing mounts yet but the first program
+package() {
+	cp -r "${source_dir}/." "${dest_dir}/"
+	mkdir -p "${dest_dir}/dev"
+}
