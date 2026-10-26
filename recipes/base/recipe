@@ -1,1 +1,10 @@
 #! /bin/sh
+
+version=0.0.1
+revision=6
+deps="base-files donut"
+
+# Nothing of its own: the packages that make the system
+package() {
+	mkdir -p "${dest_dir}"
+}
