@@ -56,15 +56,18 @@ path block, so it cannot take the new calls.
 
 | Block | Range | Now | New |
 | --- | --- | --- | --- |
-| Process | `0x20`-`0x3F` | EXIT, FORK, EXEC, WAITPID, GETPID, GETPPID, SETSID, SETPGID, GETPGID, GETSID, SLEEP (goes away with CLOCK_NANOSLEEP) | WAITID, GETPRIORITY, SETPRIORITY, SCHED_GETSCHEDULER, SCHED_SETSCHEDULER, SCHED_GETPARAM, SCHED_SETPARAM, SCHED_GETPRIORITY_RANGE, SCHED_RR_GETINTERVAL, SCHED_GETAFFINITY, SCHED_SETAFFINITY |
+| Process | `0x20`-`0x3F` | EXIT, FORK, EXEC, WAITPID, GETPID, GETPPID, SETSID, SETPGID, GETPGID, GETSID (SLEEP is gone, slot `0x2A` stays empty) | WAITID, GETPRIORITY, SETPRIORITY, SCHED_GETSCHEDULER, SCHED_SETSCHEDULER, SCHED_GETPARAM, SCHED_SETPARAM, SCHED_GETPRIORITY_RANGE, SCHED_RR_GETINTERVAL, SCHED_GETAFFINITY, SCHED_SETAFFINITY |
 | Thread, futex | `0x40`-`0x5F` | THREAD_CREATE, THREAD_EXIT, GETTID, TCB_SET, YIELD, FUTEX_WAIT, FUTEX_WAKE | none |
 | Signal | `0x60`-`0x7F` | KILL, TGKILL, SIGACTION, SIGPROCMASK, SIGPENDING, SIGRETURN, SIGALTSTACK | SIGSUSPEND, SIGTIMEDWAIT, SIGQUEUE, SETITIMER |
 | Credentials | `0x80`-`0x9F` | GETRESUID ... CAPSET | none |
-| Memory | `0xA0`-`0xBF` | MMAP, MUNMAP, MPROTECT, MSYNC | MADVISE, MLOCK, MUNLOCK, MLOCKALL, MUNLOCKALL, MREMAP |
-| Descriptor | `0xC0`-`0xDF` | OPENAT ... FCNTL, PREAD (done), PWRITE (done) | PIPE2, PPOLL, READV, WRITEV, FLOCK, FALLOCATE |
+| Memory | `0xA0`-`0xBF` | MMAP, MUNMAP, MPROTECT, MSYNC | MADVISE (done, `0xA4`), MLOCK (done, `0xA5`), MUNLOCK (done, `0xA6`), MLOCKALL (done, `0xA7`), MUNLOCKALL (done, `0xA8`), MREMAP |
+| Descriptor | `0xC0`-`0xDF` | OPENAT ... FCNTL, PREAD (done), PWRITE (done) | PIPE2, PPOLL, READV (done, `0xCF`), WRITEV (done, `0xD0`), PREADV (done, `0xD1`), PWRITEV (done, `0xD2`), FLOCK, FALLOCATE |
 | Path | `0xE0`-`0xFF` | FSTATAT ... FACCESSAT | MKNODAT, CHROOT |
 | xattr, vfs | `0x100`-`0x11F` | GETXATTRAT ... REMOVEXATTRAT, MOUNT, UMOUNT, SYNC, SYNCFS, STATVFS | none |
-| System | `0x120`-`0x13F` | UNAME, GETTIME, SETTIME, SETHOSTNAME (done) | CLOCK_NANOSLEEP (replaces SLEEP, moved here from the process block), CLOCK_GETRES, GETRLIMIT, SETRLIMIT, GETRANDOM, SYSINFO |
+| System | `0x120`-`0x13F` | UNAME, GETTIME, SETTIME, SETHOSTNAME (done), NANOSLEEP (done, `0x124`; replaces SLEEP) | GETTIMERES (done, `0x125`), GETRLIMIT, SETRLIMIT, GETRANDOM, SYSINFO |
+
+The calls that take a clock id have no `CLOCK_` in their names (`GETTIME`, `NANOSLEEP`, `GETTIMERES`), so that a `__k_SYS_*` number cannot be
+mistaken for a clock id (`__k_CLOCK_*`). mlibc still calls them `clock_*`.
 
 Keep the order inside a block. A new call takes the next free number of its block, in the order that the calls are added and not in the order
 of the table. The comment in `usr/vex/syscall.h` says 32 (done).
@@ -129,30 +132,49 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
      itself, before each chunk.
    - `UNDONE:` `file_seek` does not use `FILE_SEEKABLE` yet. It asks the node on every call and gets the same answer.
    - Still to do: the `Pread` and `Pwrite` sysdeps in mlibc.
-9. **`CLOCK_NANOSLEEP` replaces `SLEEP` (S to M).** Arguments: `clock, flags, request, remaining`. `clock` is `CLOCK_REALTIME` or
+9. ~~**`NANOSLEEP` replaces `SLEEP` (S to M).**~~ *Done.* Arguments: `clock, flags, request, remaining`. `clock` is `CLOCK_REALTIME` or
    `CLOCK_MONOTONIC`. `flags` is `0` for a duration or `TIMER_ABSTIME` (`1`) for a point on the clock. `remaining` is written only for a
    relative call that a signal ends.
-   - The call moves to the system block, with the handler in `sys_time.c`. Slot `0x2A` in the process block stays empty.
+   - The call moves to the system block (`SYS_NANOSLEEP`, `0x124`), with the handler in `sys_time.c`. Slot `0x2A` in the process block stays empty.
    - Order: first one helper in `vex/time.h` that turns a `timespec` into nanoseconds, and a deadline from now, both with saturation.
      `deadline_after` in `sys_futex.c`, `sleep_nanoseconds` and the new call use it. This is a commit of its own.
    - A relative call is the body of `sys_sleep`. An absolute call waits for `max(0, request - now(clock))`.
-   - An absolute wait on `CLOCK_REALTIME` follows `settime`: `wallclock_set` raises a generation counter and triggers an event. The
-     sleeper reads the counter before it computes the timeout and checks it again after it registers on the event. When the event fires,
-     it computes the timeout again. A clock set forward past the point ends the wait at once. A clock set back makes it longer. The
+   - An absolute wait on `CLOCK_REALTIME` follows `settime`: `wallclock_set` triggers an event under a lock (`wallclock_wait_until`). The
+     sleeper computes its timeout under the same lock, and `event_await_unlock` releases it only after the sleeper listens, so no
+     generation counter is needed. When the event fires, it computes the timeout again. A clock set forward past the point ends the wait at once. A clock set back makes it longer. The
      other kinds of wait pay nothing. Read `wallclock.c` first.
    - Other clocks give `EINVAL` until items 14 and 28.
-   - `Sysdeps<Sleep>` in mlibc becomes a relative `CLOCK_MONOTONIC` call. Fix `test.sleep.c`.
+   - A zero timeout, or an absolute point in the past, yields and returns 0. A signal gives `EINTR`; `remaining` is written for a relative call only.
+   - `ktest`: `test.sleep.c` covers both clocks and absolute points. A signal and `settime` during a wait are not tested.
+   - Still to do: `Sysdeps<Sleep>` in mlibc as a relative `CLOCK_MONOTONIC` call of `SYS_NANOSLEEP`.
 10. ~~**`SETHOSTNAME` (S).**~~ *Done.* Number `0x123`. Arguments: `name, length`. The name is not terminated, as in Linux, and has at most `__k_UNAME_SIZE - 1` (255)
     bytes. The default is `CONFIG_DEFAULT_HOSTNAME`, `vex` unless the build changes it. The name lives in `core/hostname.c` behind `vex/hostname.h` (`hostname_get`, `hostname_set`), so that a user in the kernel, such as a
     network stack, can read it. A spinlock guards it, so any context can read. There is a real default instead of `"IMPLEMENT_ME"`.
     Require `CAP_SYS_ADMIN`. Add the `SetHostname` sysdep. `setdomainname` is not planned, see the open questions.
-11. **`READV`, `WRITEV` (M).** Vectored I/O: one call reads into, or writes from, an array of buffers (`struct iovec`). It is used by
-    `stdio`, by C++ streams and by loggers, which write a message and a newline, or a header and a body, in one call. The point is
-    atomicity and fewer calls. Two writers that use `write` twice can interleave their pieces, and a pipe guarantees that a write of up to
-    `PIPE_BUF` bytes is not split only when it is one call. If mlibc loops over the buffers in user space, that guarantee is lost.
-    Implement in the kernel: loop over the `iovec` array on top of the helper of item 8, with one lock for the whole call.
-12. **`MADVISE`, `MLOCK`, `MUNLOCK`, `MLOCKALL`, `MUNLOCKALL` (S).** Real syscalls whose body checks the arguments and does nothing else.
-    - `madvise`: page-aligned start, a known advice value, and `ENOMEM` if part of the range is not mapped. No effect yet. Later,
+11. ~~**`READV`, `WRITEV` (M).**~~ *Done*, with `PREADV` and `PWRITEV` (no flags argument). Arguments: `fd, iov, count` and, for the
+    positioned calls, `offset` last.
+    - The point of the call is that the data of a `writev` of up to a page reaches the file as one `vnode_write`, and so as one write
+      of a pipe, which `pipe2` will make atomic up to `PIPE_BUF` (a pipe has to keep `PIPE_BUF <= FILE_IO_CHUNK`). There is no lock for
+      the whole call: the file layer has none, and a plain `write` of more than a page is not atomic either.
+    - `struct __k_iovec` is in `usr/vex/uio.h`, `IOV_MAX` is 1024. A longer array, or lengths that add up to more than `INT64_MAX`, give
+      `EINVAL` before any data moves. Empty buffers are skipped.
+    - `sys_file.c` has one `io_cursor_t` that walks one buffer or an iovec array, read one element at a time, and `read_chunks` and
+      `write_chunks` take it. The writer gathers the buffers into one chunk before it calls `file_write`. A read goes on over the buffers
+      until a short result, the end of the file, or a device that hands out what it has (`hands_out_at_once`: add `VNODE_FIFO` there with
+      item 16).
+    - A fault after some data moved reports that data. The first fault reports `EFAULT`.
+    - Still to do: the `Readv` and `Writev` sysdeps in mlibc.
+12. ~~**`MADVISE`, `MLOCK`, `MUNLOCK`, `MLOCKALL`, `MUNLOCKALL` (S).**~~ *Done.* Real syscalls whose body checks the arguments and does nothing else.
+    - Done as planned, with these details. The values are the Linux ones: `MADV_NORMAL` to `MADV_DONTNEED` (0 to 4, any other value is
+      `EINVAL`) and `MCL_CURRENT`, `MCL_FUTURE`, `MCL_ONFAULT`. A zero length succeeds. `mlock` and `munlock` round the range out to whole
+      pages, as Linux does, while `madvise` wants an aligned start. A range that leaves user space, or has a hole, gives `ENOMEM`
+      (`vms_check_mapped`). `mlockall` needs `MCL_CURRENT` or `MCL_FUTURE`, and `MCL_ONFAULT` alone is `EINVAL`. There is no capability
+      check yet.
+    - `MADV_DONTNEED` is real: `vms_discard` drops the pages of the range and keeps the regions. The next access faults a fresh page in:
+      zeros for anonymous memory, the file for a private file mapping (the copies of earlier writes are gone), and the same data for a
+      shared one. Device memory gives `EINVAL`, as in Linux. `MADV_WILLNEED` is still a no-op (`UNDONE`: read ahead).
+    - Still to do: the `Madvise` sysdep and the `mlock` family in mlibc.
+    - The plan as it was: `madvise`: page-aligned start, a known advice value, and `ENOMEM` if part of the range is not mapped. No effect yet. Later,
       `MADV_DONTNEED` frees the pages of an anonymous mapping.
     - `mlock` family: the same range checks. `UNDONE:` the lock matters when swap exists. Add a capability and a limit check when item 22
       exists.
@@ -164,7 +186,10 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
       `SCHED_RR_GETINTERVAL` returns the time slice of the scheduler.
     - `SCHED_GETAFFINITY` returns the mask of the online CPUs. `SCHED_SETAFFINITY` accepts a mask that has at least one online CPU and
       does nothing else. `UNDONE:` affinity in the scheduler.
-14. **`CLOCK_GETRES` and more clock ids (S).** Answer: the clocks that programs use, besides `CLOCK_REALTIME` and `CLOCK_MONOTONIC`, are:
+14. ~~**`GETTIMERES` and more clock ids (S).**~~ *Done.* `GETTIMERES` is `0x125`. The clock ids have the Linux values. `canonical_clock` in
+    `sys_time.c` maps the aliases, and `gettime`, `gettimeres` and `nanosleep` use it. `settime` takes `CLOCK_REALTIME` only. The resolution is
+    `clock_source_resolution_ns` (`mult / 2^shift`, rounded up, at least 1 ns). A null pointer only checks that the clock exists. The
+    table below is the plan as it was. Answer: the clocks that programs use, besides `CLOCK_REALTIME` and `CLOCK_MONOTONIC`, are:
 
     | Clock | Meaning | Plan |
     | --- | --- | --- |
@@ -174,7 +199,7 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
     | `CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID` | CPU time of the process or the thread. POSIX requires them, and `clock()` is likely to use the first. | Item 28. Until then `EINVAL`. |
     | `CLOCK_TAI` | International atomic time. | Not planned. |
 
-    `CLOCK_GETRES(clock, timespec*)` returns the step of the active clock source: roughly one tick, from the `mult` and `shift` of
+    `GETTIMERES(clock, timespec*)` returns the step of the active clock source: roughly one tick, from the `mult` and `shift` of
     `clock_source_t`. Check how the active source stores its frequency before you write it. Then `Sysdeps<ClockGetres>` is a plain call.
 
 ### Tier 3: one new piece of kernel (M)
@@ -327,6 +352,29 @@ The order inside this tier follows what is wanted first, not only cost.
 30. **The rest.** `MREMAP`, `FALLOCATE` (ext2 and `ramfs`, other file systems return `ENOSYS`), `CHROOT` (a root pointer in the process),
     `WAITID` (as `waitpid`, with `siginfo`), `SIGQUEUE` (needs a queue of real-time signals, not a bit mask).
 
+31. **Memory commit accounting.** Decision: strict, like the Windows commit charge and Linux `vm.overcommit_memory=2`. A call that
+    would take the total over the limit fails with `ENOMEM` at the call, so that no process finds out about it on a page fault. It goes
+    after item 13 and before `ramfs` (see "Priority overrides"), so that shared anonymous memory is counted from the start.
+    - The account is a property of the region, not of the calls. `vm_region_t` gets a flag for a counted region, and its size is known from
+      its bounds. The global counter changes only where a region appears, goes away or changes the flag: `insert_region`, `free_region`,
+      `vms_protect`, `vms_clone`. `split_region` keeps the sum, so `munmap` of a part, `exec` and exit need no code of their own.
+    - Counted: private writable memory, anonymous or file (a write may copy a page), and shared anonymous memory once. Not counted:
+      `PROT_NONE`, read-only private mappings, and shared file mappings. `mprotect` of a private region to writable counts it, and can
+      fail with `ENOMEM`: this is the reserve and commit pair of Windows. `MADV_DONTNEED` does not uncount, as the region stays.
+    - The limit is the number of managed pages minus a margin for the kernel (the slab, stacks, page tables are not counted). With swap
+      it grows by the size of swap. The page cache is not counted, as it can be reclaimed.
+    - `fork` counts the private writable memory of the child too, and returns `ENOMEM` when it does not fit. POSIX allows this. Redis
+      (a background save) and Java (`Runtime.exec`) are the known programs that meet it; shared memory is counted once and does not
+      double. `UNDONE:` a call that starts a program without a copy of the address space (`vfork` or a spawn call), as strict systems
+      have it.
+    - `MAP_NORESERVE`: a process that holds a new capability may ask for a mapping that is not counted, and a page that cannot be
+      given on a touch sends `SIGBUS`. Any other process passes the flag with no effect and no error, as programs pass it out of habit.
+      `UNDONE:` the capability (the next free number after `CAP_DEVICE`) and a small reserve of the limit for processes that hold it.
+    - A fault that cannot get a page sends `SIGBUS` (`BUS_ADRERR`), as it does now for every error other than `EFAULT` and `EACCES`.
+      An OOM killer is not planned: strict accounting makes it rare. Come back to it when it is a problem.
+    - Item 2 (`MAP_NORESERVE`) and item 12 (`mlock`) lie next to this. Item 22 (`RLIMIT_AS`, `RLIMIT_DATA`) is a different limit, per
+      process.
+
 ### Later, not scheduled
 
 - **A sysctl-like registry.** Not planned now, and not to be designed before it is needed. The idea so far: values of several types bound
@@ -375,12 +423,8 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 ## Next steps
 
-1. The time helper in `vex/time.h` (item 9), as a commit of its own.
-2. `CLOCK_NANOSLEEP` (item 9).
-3. `CLOCK_GETRES` and the clock aliases (item 14).
-4. `READV` and `WRITEV` (item 11), on the chunk loop of `sys_file.c`.
-5. `MADVISE` and the `MLOCK` family (item 12), then the priority and `SCHED_*` calls (item 13).
-6. Job control (item 25), once the signal sysdeps of mlibc (item 3) exist.
+1. The priority and `SCHED_*` calls (item 13).
+2. Job control (item 25), once the signal sysdeps of mlibc (item 3) exist.
 
 ## Decisions made while implementing
 
@@ -398,11 +442,13 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 - The new `MAP_*` flags in `abi-bits/vm-flags.h`.
 - `Sysdeps<Seek>` already stores the result of the call, which is the new offset now.
-- The `Pread` and `Pwrite` sysdeps, and `Sleep` as a relative `CLOCK_MONOTONIC` call of `CLOCK_NANOSLEEP`.
+- The `Readv` and `Writev` sysdeps, and `Pread` and `Pwrite`, and `Sleep` as a relative `CLOCK_MONOTONIC` call of `SYS_NANOSLEEP`.
 - The `SetHostname` sysdep.
 - Everything in Tier 1: signals, threads, `Sysconf`.
 
 ## Dependencies
+
+- Item 31 goes after item 13 and before item 23. It needs no other item.
 
 - Item 4 needs item 1. Item 5 needs item 20 for the CPU count and the memory size.
 - Items 8 to 14, 15, 16 need item 7 (renumbering) when they add a number.
@@ -418,6 +464,8 @@ The tiers are sorted by cost. These items are done earlier than their tier says:
 
 - Item 25 (job control) goes right after Tier 2, before items 15 (`sigsuspend`) and 16 (`pipe2`). It does not depend on them. It does
   depend on the signal sysdeps (item 3) and on the renumbering (item 7), because a shell test needs both.
+
+- Item 31 goes right after item 13 and before item 23 (`ramfs`), not at the end of Tier 4.
 
 ## Open questions
 
@@ -444,6 +492,9 @@ The tiers are sorted by cost. These items are done earlier than their tier says:
 - [x] Item 8: `pwrite` with `O_APPEND` follows POSIX and writes at the given offset. Decided.
 - [x] Item 8: a flag in `file_t` for streams, set at open, and a char device with no `seek` is a stream. Decided.
 - [x] Item 9: `CLOCK_NANOSLEEP` goes to the system block, and an absolute `CLOCK_REALTIME` wait follows `settime`. Decided.
+- [x] Item 31: strict accounting at the region level. `fork` may return `ENOMEM`. `PROT_NONE` is not counted and `mprotect` counts.
+  `MAP_NORESERVE` works only for a process with a capability and is ignored for the others. `SIGBUS` when a fault cannot get a page.
+  No OOM killer for now. Decided.
 - [x] Item 9: one shared time helper for futex, sleep and the new call. Decided.
 
 ## Not verified
