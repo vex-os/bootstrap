@@ -1,6 +1,7 @@
 # Syscall plan for a complete POSIX mlibc
 
-Status: agreed, ready to implement. Networking is out of scope.
+Status: agreed, in progress. Networking is out of scope. Struck-through items are *done* and in the kernel; "Decisions made while implementing" lists
+what changed against the text below.
 
 The work is sorted from the cheapest item to the most expensive one. Do the items in this order, and leave the last ones for later. Cost is
 a rough size: **S** is a few lines, **M** is one new function or one small subsystem piece, **L** is a new subsystem or a change in several
@@ -11,7 +12,8 @@ subsystems. The futex item is first although it is not the cheapest, because it 
 - There is no userspace except mlibc and the init program. The ABI can change freely.
 - The kernel and mlibc are submodules. An ABI change is one kernel commit, one mlibc commit and one bootstrap commit that moves both pointers.
 - "Kernel" paths are under `kernel/kernel/`. "mlibc" paths are under `mlibc/sysdeps/vex/`.
-- The plan comes from reading the code. Section "Not verified" lists what the author did not read.
+- The plan comes from reading the code. Section "Not verified" lists what the author did not read. The table of verified facts shows the
+  code as it was when the plan was written: the items marked *done* changed some rows.
 - A stub in mlibc is allowed only when it is honest. A stub for something the kernel will own later goes into the kernel, with a `TODO` or
   `UNDONE`, so that the ABI is final from the start.
 
@@ -54,23 +56,24 @@ path block, so it cannot take the new calls.
 
 | Block | Range | Now | New |
 | --- | --- | --- | --- |
-| Process | `0x20`-`0x3F` | EXIT, FORK, EXEC, WAITPID, GETPID, GETPPID, SETSID, SETPGID, GETPGID, GETSID | CLOCK_NANOSLEEP (replaces SLEEP), WAITID, GETPRIORITY, SETPRIORITY, SCHED_GETSCHEDULER, SCHED_SETSCHEDULER, SCHED_GETPARAM, SCHED_SETPARAM, SCHED_GETPRIORITY_RANGE, SCHED_RR_GETINTERVAL, SCHED_GETAFFINITY, SCHED_SETAFFINITY |
+| Process | `0x20`-`0x3F` | EXIT, FORK, EXEC, WAITPID, GETPID, GETPPID, SETSID, SETPGID, GETPGID, GETSID, SLEEP (goes away with CLOCK_NANOSLEEP) | WAITID, GETPRIORITY, SETPRIORITY, SCHED_GETSCHEDULER, SCHED_SETSCHEDULER, SCHED_GETPARAM, SCHED_SETPARAM, SCHED_GETPRIORITY_RANGE, SCHED_RR_GETINTERVAL, SCHED_GETAFFINITY, SCHED_SETAFFINITY |
 | Thread, futex | `0x40`-`0x5F` | THREAD_CREATE, THREAD_EXIT, GETTID, TCB_SET, YIELD, FUTEX_WAIT, FUTEX_WAKE | none |
 | Signal | `0x60`-`0x7F` | KILL, TGKILL, SIGACTION, SIGPROCMASK, SIGPENDING, SIGRETURN, SIGALTSTACK | SIGSUSPEND, SIGTIMEDWAIT, SIGQUEUE, SETITIMER |
 | Credentials | `0x80`-`0x9F` | GETRESUID ... CAPSET | none |
 | Memory | `0xA0`-`0xBF` | MMAP, MUNMAP, MPROTECT, MSYNC | MADVISE, MLOCK, MUNLOCK, MLOCKALL, MUNLOCKALL, MREMAP |
-| Descriptor | `0xC0`-`0xDF` | OPENAT ... FCNTL | PIPE2, PREAD, PWRITE, PPOLL, READV, WRITEV, FLOCK, FALLOCATE |
+| Descriptor | `0xC0`-`0xDF` | OPENAT ... FCNTL, PREAD (done), PWRITE (done) | PIPE2, PPOLL, READV, WRITEV, FLOCK, FALLOCATE |
 | Path | `0xE0`-`0xFF` | FSTATAT ... FACCESSAT | MKNODAT, CHROOT |
 | xattr, vfs | `0x100`-`0x11F` | GETXATTRAT ... REMOVEXATTRAT, MOUNT, UMOUNT, SYNC, SYNCFS, STATVFS | none |
-| System | `0x120`-`0x13F` | UNAME, GETTIME, SETTIME | CLOCK_GETRES, SETHOSTNAME, GETRLIMIT, SETRLIMIT, GETRANDOM, SYSINFO |
+| System | `0x120`-`0x13F` | UNAME, GETTIME, SETTIME, SETHOSTNAME (done) | CLOCK_NANOSLEEP (replaces SLEEP, moved here from the process block), CLOCK_GETRES, GETRLIMIT, SETRLIMIT, GETRANDOM, SYSINFO |
 
-Keep the order inside a block. Change the comment in `usr/vex/syscall.h` from 16 to 32.
+Keep the order inside a block. A new call takes the next free number of its block, in the order that the calls are added and not in the order
+of the table. The comment in `usr/vex/syscall.h` says 32 (done).
 
 ## Work items, cheapest first
 
 ### Tier 0: unblock and repair
 
-1. **Futex with shared keys (M).** Decision: do it properly now.
+1. ~~**Futex with shared keys (M).**~~ *Done.* Decision: do it properly now.
    - A wait or wake with `FUTEX_SHARED` takes the physical address of the word as the key. A private wait keeps (vmspace, address).
    - A shared waiter keeps its page pinned for as long as it is queued. Today the page is unpinned before the sleep. If the page cache
      evicts or moves the page, the key would change under the waiter.
@@ -81,7 +84,7 @@ Keep the order inside a block. Change the comment in `usr/vex/syscall.h` from 16
    - Tests: a `ktest` with `fork` and a `MAP_SHARED` file mapping now. A shared anonymous mapping comes with item 24.
    - Not needed by mlibc, and not planned: requeue, wake-op, priority inheritance. Robust mutexes (a robust list walked at thread exit) are
      not checked. Look at what mlibc expects before you decide.
-2. **`mmap` flags (S to M).** Add the flags to `usr/vex/mman.h` and mlibc `vm-flags.h`. The values are the Linux ones, as for `FIXED` and
+2. ~~**`mmap` flags (S to M).**~~ *Done.* Add the flags to `usr/vex/mman.h` and mlibc `vm-flags.h`. The values are the Linux ones, as for `FIXED` and
    `ANONYMOUS`.
 
    | Flag | Value | Meaning | Behaviour |
@@ -110,17 +113,38 @@ Keep the order inside a block. Change the comment in `usr/vex/syscall.h` from 16
 
 ### Tier 2: small kernel changes
 
-7. **Renumber (S).** See Numbering. Do this before any new syscall.
-8. **`PREAD`, `PWRITE` (S).** Arguments: `fd, buf, len, offset`. Copy the `FILE_IO_CHUNK` loop of `read_file` and `write_file`, but call
-   `vnode_read` and `vnode_write` with the given offset and leave `file->offset` alone. Return `ESPIPE` when the file cannot seek. Whether
-   it can seek is the answer of its `seek` operation, not its vnode type: a probe `vnode_seek(node, file, 0, SEEK_CUR)` that returns
-   `-ESPIPE` means no. A new contract: a file that cannot seek returns `-ESPIPE` from `seek`. The tty and the pipe get such an operation.
-   Today the tty has no `seek` operation, so `lseek` on a tty succeeds, which POSIX forbids (`ESPIPE`), and this fixes it too. Check
-   `kplog`, `hwtree` and the framebuffer, which may or may not seek. Then add the `Pread` and `Pwrite` sysdeps.
-9. **`CLOCK_NANOSLEEP` replaces `SLEEP` (S).** Arguments: `clock, flags, request, remaining`. `TIMER_ABSTIME` is `1`. The timeout is
-   `request` for a relative call, and `max(0, request - now(clock))` for an absolute one. Keep the body of `sys_sleep`. Write `remaining`
-   only for a relative call. `Sysdeps<Sleep>` becomes a relative `CLOCK_MONOTONIC` call.
-10. **`SETHOSTNAME` (S).** Keep the name in a buffer in `sys_uname.c` under a lock, with a real default instead of `"IMPLEMENT_ME"`.
+7. ~~**Renumber (S).**~~ *Done.* See Numbering. Do this before any new syscall.
+8. ~~**`PREAD`, `PWRITE` (S).**~~ *Done.* Arguments: `fd, buf, len, offset`.
+   - `file_read` and `file_write` take a pointer to the position and move it. `read` passes `&file->offset`. `pread` passes a private copy
+     and leaves the offset of the file alone. One chunk loop in `sys_file.c` serves all four calls. `file_read` takes no credentials,
+     because access is checked in `open`. `file_write` keeps them for `vnode_remove_privs`.
+   - `file_t` has a `mode` field. `file_open_node`, the only place that makes a `file_t`, sets `FILE_SEEKABLE` once, from a probe
+     `vnode_seek(node, file, 0, SEEK_CUR)`. A result of `-ESPIPE` means a stream. `pread` and `pwrite` check the bit once per call
+     (`ESPIPE`, before `EBADF`, as Linux does). They return `EINVAL` for a negative offset or a range that wraps.
+   - Contract: a node that cannot seek returns `-ESPIPE` from `seek`. A node with no `seek` operation (regular files, directories) leaves
+     the arithmetic to `file_seek`, which still takes `-ENOSYS` to mean that. The `seek` call returns the new offset.
+   - Char devices: no `seek` operation means a stream (tty, serial, kplog, hwtree). The framebuffer has a `seek` of its own, because its
+     memory is addressed by byte. It keeps the offset in `[0, info.size]`.
+   - `pwrite` writes at the given offset also with `O_APPEND`, as POSIX has it (Linux appends). `sys_write` moves to the end of the file
+     itself, before each chunk.
+   - `UNDONE:` `file_seek` does not use `FILE_SEEKABLE` yet. It asks the node on every call and gets the same answer.
+   - Still to do: the `Pread` and `Pwrite` sysdeps in mlibc.
+9. **`CLOCK_NANOSLEEP` replaces `SLEEP` (S to M).** Arguments: `clock, flags, request, remaining`. `clock` is `CLOCK_REALTIME` or
+   `CLOCK_MONOTONIC`. `flags` is `0` for a duration or `TIMER_ABSTIME` (`1`) for a point on the clock. `remaining` is written only for a
+   relative call that a signal ends.
+   - The call moves to the system block, with the handler in `sys_time.c`. Slot `0x2A` in the process block stays empty.
+   - Order: first one helper in `vex/time.h` that turns a `timespec` into nanoseconds, and a deadline from now, both with saturation.
+     `deadline_after` in `sys_futex.c`, `sleep_nanoseconds` and the new call use it. This is a commit of its own.
+   - A relative call is the body of `sys_sleep`. An absolute call waits for `max(0, request - now(clock))`.
+   - An absolute wait on `CLOCK_REALTIME` follows `settime`: `wallclock_set` raises a generation counter and triggers an event. The
+     sleeper reads the counter before it computes the timeout and checks it again after it registers on the event. When the event fires,
+     it computes the timeout again. A clock set forward past the point ends the wait at once. A clock set back makes it longer. The
+     other kinds of wait pay nothing. Read `wallclock.c` first.
+   - Other clocks give `EINVAL` until items 14 and 28.
+   - `Sysdeps<Sleep>` in mlibc becomes a relative `CLOCK_MONOTONIC` call. Fix `test.sleep.c`.
+10. ~~**`SETHOSTNAME` (S).**~~ *Done.* Number `0x123`. Arguments: `name, length`. The name is not terminated, as in Linux, and has at most `__k_UNAME_SIZE - 1` (255)
+    bytes. The default is `CONFIG_DEFAULT_HOSTNAME`, `vex` unless the build changes it. The name lives in `core/hostname.c` behind `vex/hostname.h` (`hostname_get`, `hostname_set`), so that a user in the kernel, such as a
+    network stack, can read it. A spinlock guards it, so any context can read. There is a real default instead of `"IMPLEMENT_ME"`.
     Require `CAP_SYS_ADMIN`. Add the `SetHostname` sysdep. `setdomainname` is not planned, see the open questions.
 11. **`READV`, `WRITEV` (M).** Vectored I/O: one call reads into, or writes from, an array of buffers (`struct iovec`). It is used by
     `stdio`, by C++ streams and by loggers, which write a message and a newline, or a header and a body, in one call. The point is
@@ -349,6 +373,35 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - Keep the `static_assert` so that the next field fails the build instead of changing the class by accident. Check the real size with
   a build before each field. The count above is by hand.
 
+## Next steps
+
+1. The time helper in `vex/time.h` (item 9), as a commit of its own.
+2. `CLOCK_NANOSLEEP` (item 9).
+3. `CLOCK_GETRES` and the clock aliases (item 14).
+4. `READV` and `WRITEV` (item 11), on the chunk loop of `sys_file.c`.
+5. `MADVISE` and the `MLOCK` family (item 12), then the priority and `SCHED_*` calls (item 13).
+6. Job control (item 25), once the signal sysdeps of mlibc (item 3) exist.
+
+## Decisions made while implementing
+
+- `PROT_NONE`: a user page without access clears `PRESENT` in its entry and sets a software bit (`AMD64_PML_PROTNONE`). The entry keeps its
+  frame. `pmentry_valid` counts it as mapped, so `rmap`, `fork`, `munmap` and `mprotect` need no change. An access faults and ends in
+  `SIGSEGV` with `SEGV_ACCERR`. This is what Linux does, because an x86 page that is present is always readable.
+- Shared futex: a shared key is the physical address of the word. A shared waiter keeps the frame pinned while it sleeps. The wake at
+  thread exit uses both kinds of key. Only a `MAP_SHARED` mapping gives a stable frame, and `usr/vex/futex.h` says so.
+- `MAP_POPULATE` faults the pages in with a read, one page at a time, and reports no error.
+- `SETHOSTNAME` takes the lengths up to 255, not 64 as Linux does, because the `nodename` field has 256 bytes.
+- Access to a file is checked in `open` only. A descriptor is a right that was granted, so `read` does not look at credentials again. A
+  check on every access would belong to a security module, as `security_file_permission` in Linux.
+
+### Follow-up for mlibc (a session of its own)
+
+- The new `MAP_*` flags in `abi-bits/vm-flags.h`.
+- `Sysdeps<Seek>` already stores the result of the call, which is the new offset now.
+- The `Pread` and `Pwrite` sysdeps, and `Sleep` as a relative `CLOCK_MONOTONIC` call of `CLOCK_NANOSLEEP`.
+- The `SetHostname` sysdep.
+- Everything in Tier 1: signals, threads, `Sysconf`.
+
 ## Dependencies
 
 - Item 4 needs item 1. Item 5 needs item 20 for the CPU count and the memory size.
@@ -388,6 +441,10 @@ The tiers are sorted by cost. These items are done earlier than their tier says:
 - [x] Item 22: shared refcounted object (b). Decided.
 - [x] Item 23: how `ramfs` stores file pages: a memory mode in `fcache` (not a separate page store inside `ramfs`). Decided (delegated).
 - [x] Item 25: job control moves before `pipe2` and `sigsuspend`. See "Priority overrides". Decided.
+- [x] Item 8: `pwrite` with `O_APPEND` follows POSIX and writes at the given offset. Decided.
+- [x] Item 8: a flag in `file_t` for streams, set at open, and a char device with no `seek` is a stream. Decided.
+- [x] Item 9: `CLOCK_NANOSLEEP` goes to the system block, and an absolute `CLOCK_REALTIME` wait follows `settime`. Decided.
+- [x] Item 9: one shared time helper for futex, sleep and the new call. Decided.
 
 ## Not verified
 
