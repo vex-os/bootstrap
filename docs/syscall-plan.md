@@ -56,7 +56,7 @@ path block, so it cannot take the new calls.
 
 | Block | Range | Now | New |
 | --- | --- | --- | --- |
-| Process | `0x20`-`0x3F` | EXIT, FORK, EXEC, WAITPID, GETPID, GETPPID, SETSID, SETPGID, GETPGID, GETSID (SLEEP is gone, slot `0x2A` stays empty) | WAITID, GETPRIORITY, SETPRIORITY, SCHED_GETSCHEDULER, SCHED_SETSCHEDULER, SCHED_GETPARAM, SCHED_SETPARAM, SCHED_GETPRIORITY_RANGE, SCHED_RR_GETINTERVAL, SCHED_GETAFFINITY, SCHED_SETAFFINITY |
+| Process | `0x20`-`0x3F` | EXIT, FORK, EXEC, WAITPID, GETPID, GETPPID, SETSID, SETPGID, GETPGID, GETSID (SLEEP is gone, slot `0x2A` stays empty) | WAITID, GETPRIORITY (done, `0x2B`), SETPRIORITY (done), GETSCHEDULER (done), SETSCHEDULER (done), GETSCHEDPARAM (done), SETSCHEDPARAM (done), GETSCHEDRANGE (done), GETSCHEDINTERVAL (done), GETAFFINITY (done), SETAFFINITY (done, `0x34`) |
 | Thread, futex | `0x40`-`0x5F` | THREAD_CREATE, THREAD_EXIT, GETTID, TCB_SET, YIELD, FUTEX_WAIT, FUTEX_WAKE | none |
 | Signal | `0x60`-`0x7F` | KILL, TGKILL, SIGACTION, SIGPROCMASK, SIGPENDING, SIGRETURN, SIGALTSTACK | SIGSUSPEND, SIGTIMEDWAIT, SIGQUEUE, SETITIMER |
 | Credentials | `0x80`-`0x9F` | GETRESUID ... CAPSET | none |
@@ -178,14 +178,29 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
       `MADV_DONTNEED` frees the pages of an anonymous mapping.
     - `mlock` family: the same range checks. `UNDONE:` the lock matters when swap exists. Add a capability and a limit check when item 22
       exists.
-13. **`GETPRIORITY`, `SETPRIORITY`, and the `SCHED_*` calls (S).** Decision: stubs in the kernel, not in mlibc.
-    - Keep the nice value (one byte) in `process_t`, and report it back. It has no effect on the scheduler until nice levels are
-      planned. The process budget 512 has room for it. `UNDONE:` scheduler effect.
-    - `SCHED_GETSCHEDULER`, `SCHED_SETSCHEDULER`, `SCHED_GETPARAM`, `SCHED_SETPARAM`: the only policy is `SCHED_OTHER` with priority 0.
-      Setting any other policy or priority returns `EINVAL`. `SCHED_GETPRIORITY_RANGE(policy)` returns 0 and 0 for `SCHED_OTHER`.
-      `SCHED_RR_GETINTERVAL` returns the time slice of the scheduler.
-    - `SCHED_GETAFFINITY` returns the mask of the online CPUs. `SCHED_SETAFFINITY` accepts a mask that has at least one online CPU and
-      does nothing else. `UNDONE:` affinity in the scheduler.
+13. ~~**`GETPRIORITY`, `SETPRIORITY`, and the `SCHED_*` calls.**~~ *Done*, with a real effect of the nice value. Numbers `0x2B` to `0x34`
+    in the order of the table above.
+    - The nice value is `int8_t nice` in `process_t`, in the padding after `exit_signal`: `sizeof(process_t)` stays 248, so the budget
+      stays 256 and the `static_assert` is a tripwire as before. A child inherits it. `exec` keeps it. The scheduler reads it without a lock.
+    - Effect: the timeslice of a thread is `SCHED_TIMESLICE_NS` scaled by nice, a fifth less per step up and a quarter more per step down,
+      cut to 100 us and to four times the base. A table of 40 values, built in `sched_init`. A thread with no process gets the base.
+      `thread_t.timeslice` is gone: `timeslice_of` computes it. The run queues are still one FIFO per hart, so this is a share of the
+      time and not a priority. `UNDONE:` a wakeup of a thread with a higher priority does not run before the others.
+    - `getpriority` returns `NICE_BIAS - nice` (1 to 40), so that a result is not taken for an error. `setpriority` cuts the value to
+      the range. `PRIO_PROCESS`, `PRIO_PGRP` and `PRIO_USER` all work (`process_for_each`, a new walk of the process table that holds a
+      reference to each process and may sleep). `who` of zero is the caller, its group, or its real uid.
+    - `CAP_SYS_NICE` (23, as in Linux): needed to lower the nice value and to change the process of another user. A process of the same
+      user, by effective uid, may raise its nice value. Errors as in Linux: `EPERM` for a process that is not ours, `EACCES` for the lowering.
+      `UNDONE:` `RLIMIT_NICE` lets a process lower it that far, with item 22.
+    - The only policy is `SCHED_OTHER` with priority 0. Anything else is `EINVAL`. `GETSCHEDRANGE(policy, range*)` writes `{0, 0}`.
+      `GETSCHEDINTERVAL` gives the timeslice that the process has by its nice value. The `pid` of these calls is a process, and a
+      negative one is `EINVAL`.
+    - `GETAFFINITY(pid, size, mask*)` writes the online harts as whole 64 bit words and returns the size of the mask, as Linux does.
+      `SETAFFINITY` takes a mask with at least one online hart and does nothing else. `UNDONE:` the scheduler keeps the thread off the
+      other harts. Today `bound_hart` is one hart for a kernel thread. A mask means the choice in `choose_hart`, the stealing in `rq_steal`
+      and the wakeup in `kick_hart` look at it.
+    - Still to do: the sysdeps in mlibc, and the conversion of `getpriority`.
+
 14. ~~**`GETTIMERES` and more clock ids (S).**~~ *Done.* `GETTIMERES` is `0x125`. The clock ids have the Linux values. `canonical_clock` in
     `sys_time.c` maps the aliases, and `gettime`, `gettimeres` and `nanosleep` use it. `settime` takes `CLOCK_REALTIME` only. The resolution is
     `clock_source_resolution_ns` (`mult / 2^shift`, rounded up, at least 1 ns). A null pointer only checks that the clock exists. The
@@ -423,7 +438,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 ## Next steps
 
-1. The priority and `SCHED_*` calls (item 13).
+1. Memory commit accounting (item 31), then `ramfs` (item 23) and shared anonymous memory (item 24).
 2. Job control (item 25), once the signal sysdeps of mlibc (item 3) exist.
 
 ## Decisions made while implementing
