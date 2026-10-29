@@ -32,7 +32,7 @@ subsystems. The futex item is first although it is not the cheapest, because it 
 | File close | `vnode_ops.open` and `.close` exist, with `file->ctxdata`. `close` runs when the last reference goes. | End counters for a pipe are easy. |
 | Reading | `read_file` in `sys_file.c` loops after a full 4096 byte chunk. It stops early only for `VNODE_CHAR_DEV`. | A pipe read of exactly 4096 bytes blocks on the second round. Add `VNODE_FIFO` to the condition. |
 | `fs` pointer | `vnode.c` (chmod, chown, utimes, `set_attr`) and `sys_mmap` use `node->fs` without a check. | A pipe vnode needs a real `vfs_t`. devfs is the model. |
-| Page cache | `fcache` fills pages from the block device (`bmap`, `node->fs->volume`). It never evicts a dirty page. | A memory file system needs a mode of `fcache` with no backing store. |
+| Page cache | `fcache` fills pages from the block device (`bmap`, `node->fs->volume`). It never evicts a dirty page. | A memory file system needs a mode of `fcache` with no backing store (done: `fcache_set_memory`). |
 | Events | `event_await_unlock` takes an array of events but only one lock. A trigger without a listener is lost, unless `linger_pending` is set. tty triggers do not set it. | A wait on several files loses wakeups (see `ppoll`). |
 | Signals | `queue_signal` drops a signal at once if a thread could take it and the action ignores it. A blocked signal stays pending. | A wakeup in `sigsuspend` always means a real signal. |
 | Signal frame | `arch_signal_setup` needs a valid `sa_restorer`. It passes `(sig, siginfo*, ucontext*)` in `rdi`, `rsi`, `rdx`. The old mask goes to `uc_sigmask`. | mlibc must always set `SA_RESTORER` and supply a trampoline. |
@@ -318,20 +318,23 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
 
 The order inside this tier follows what is wanted first, not only cost.
 
-23. **`ramfs`** (a memory file system), planned from the start.
-    - A `vfs_driver` named `ramfs`, mounted for `/tmp`, `/run` and `/dev/shm`. It has files, directories and symlinks with all data in memory.
+23. **`tmpfs`** (a memory file system), planned from the start. *Partly done.*
+    - A `vfs_driver` named `tmpfs`, mounted for `/tmp` and `/run`. It has files, directories and symlinks with all data in memory.
       It needs `lookup`, `iterate` (a cookie that survives `unlink`), `create`, `unlink`, `rename`, `link`, `symlink`, `read`, `write`,
       `set_attr`, `stat`, `fault`.
-    - Pages: add a memory mode to `fcache`. With no `bmap`, a missing page is filled with zeros, allocation does nothing, writeback does
-      nothing, and reclaim never takes the page, because the page is the only copy. The other way is a page store inside `ramfs`, which
-      repeats the fault and the read code. The first way is cheaper.
+    - Pages: a memory mode of `fcache` (`fcache_set_memory`). With no `bmap`, a missing page is filled with zeros, allocation does nothing,
+      writeback does nothing, and reclaim never takes the page, because the page is the only copy. A read of a hole takes no page.
     - Unlinked-but-open files must keep their pages (`release` frees them).
-    - Commit limit (item 31): a named file takes one page from the limit when the page is allocated, and gives it back when the page goes.
-      A write that does not fit returns `ENOSPC`, and a fault on a file that `ftruncate` made larger sends `SIGBUS`. There is no size limit of
-      its own: `/tmp` and private memory share the one limit.
-    - Vnode types for FIFOs and devices are only a field here, so `mknodat` works on `ramfs` before it works on ext2.
-24. **Shared anonymous `mmap` and POSIX shared memory.** `MAP_SHARED | MAP_ANONYMOUS` creates a hidden unlinked `ramfs` file of the
-    size of the mapping and maps it. The hidden file takes the whole size from the commit limit when it appears (item 31). `shm_open` opens a file in `/dev/shm`. This also tests shared futexes (item 1) and process-shared
+    - Commit limit (item 31): a file takes `ceil(size / PAGE_SIZE)` pages from the limit when `ftruncate` or a write makes it longer, holes
+      included, and gives them back when it shrinks or goes. A call that does not fit returns `ENOSPC`, so a fault never fails for the limit.
+      The mount options `size=` and `nodes=` limit one mount; without them `/tmp` and private memory share the one limit.
+    - Vnode types for FIFOs and devices are only a field here, so `mknodat` works on `tmpfs` before it works on ext2.
+    - Done: mount and its options (`size=`, `nodes=`, `mode=`, `uid=`, `gid=`), `statvfs`, files, directories, `lookup`, `iterate`,
+      `create`, `unlink`, `read`, `write`, `stat`, `set_attr`, `fault`, and `ktest/test.tmpfs.c`.
+    - Still to do: `rename`, `link`, `symlink` and `readlink`. A symlink target goes into a slab object of its own length, and a target
+      of `SLAB_MAX_SIZE` bytes or more gives `ENAMETOOLONG`.
+24. **Shared anonymous `mmap` and POSIX shared memory.** `MAP_SHARED | MAP_ANONYMOUS` creates a hidden unlinked `tmpfs` file of the
+    size of the mapping and maps it. The hidden file takes the whole size from the commit limit when it appears (item 31). `shm_open` opens a file in `/run/shm`, a `tmpfs` mount: devfs is a pseudo file system and has no directories, and the path is a detail of mlibc. This also tests shared futexes (item 1) and process-shared
     mutexes in mlibc.
 25. **Job control.** Decision: implement it. The existing pieces are `exit_to_user`, `pending_work`, `sched_kick`, `child_exited` and the
     tty foreground group.
@@ -364,15 +367,15 @@ The order inside this tier follows what is wanted first, not only cost.
     `ENOSYS`.
 28. **CPU time:** `CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID`, `getrusage`, `times`, and the `rusage` result of `waitpid`. A
     nanosecond counter in `thread_t`, updated at each context switch. Sum it per process and for waited children.
-29. **`MKNODAT` and named FIFOs.** First on `ramfs` (a vnode of type FIFO or device, in memory). Opening a FIFO inode resolves to a pipe object
+29. **`MKNODAT` and named FIFOs.** First on `tmpfs` (a vnode of type FIFO or device, in memory). Opening a FIFO inode resolves to a pipe object
     that lives with the vnode. An open for read blocks until a writer exists. Then ext2: it must store and read the device and FIFO inode
     types and `rdev`, and `create` must accept the new types.
-30. **The rest.** `MREMAP`, `FALLOCATE` (ext2 and `ramfs`, other file systems return `ENOSYS`), `CHROOT` (a root pointer in the process),
+30. **The rest.** `MREMAP`, `FALLOCATE` (ext2 and `tmpfs`, other file systems return `ENOSYS`), `CHROOT` (a root pointer in the process),
     `WAITID` (as `waitpid`, with `siginfo`), `SIGQUEUE` (needs a queue of real-time signals, not a bit mask).
 
 31. ~~**Memory commit accounting.**~~ *Done.* Decision: strict, like the Windows commit charge and Linux `vm.overcommit_memory=2`. A call that
     would take the total over the limit fails with `ENOMEM` at the call, so that no process finds out about it on a page fault. It goes
-    after item 13 and before `ramfs` (see "Priority overrides"), so that shared anonymous memory is counted from the start.
+    after item 13 and before `tmpfs` (see "Priority overrides"), so that shared anonymous memory is counted from the start.
     - The account is a property of the region, not of the calls. `vm_region_t` gets a flag for a counted region, and its size is known from
       its bounds. The global counter changes only where a region appears, goes away or changes the flag: `insert_region`, `free_region`,
       `vms_protect`, `vms_clone`. `split_region` keeps the sum, so `munmap` of a part, `exec` and exit need no code of their own.
@@ -412,9 +415,9 @@ The order inside this tier follows what is wanted first, not only cost.
         the capability the flag does nothing. The fault path already sends `SIGBUS` when a page is not available.
       - `UNDONE:` a small part of the limit for the holders of `CAP_VM_NORESERVE`. `UNDONE:` a call that starts a program without a copy
         of the address space.
-      - Shared anonymous memory (item 24) and `ramfs` (item 23) take pages from the same counter, and the charge belongs to the object
+      - Shared anonymous memory (item 24) and `tmpfs` (item 23) take pages from the same counter, and the charge belongs to the object
         and not to the region, so that a `fork` does not count shared pages twice. The hidden file of item 24 takes its whole size at
-        creation, and a named `ramfs` file takes one page at a time.
+        creation, and a named `tmpfs` file takes one page at a time.
       - Tests: `ktest/test.commit.c`.
 
 ### Later, not scheduled
@@ -465,9 +468,10 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 ## Next steps
 
-1. `ramfs` (item 23) and shared anonymous memory (item 24), with the charge rule of item 31.
-2. Job control (item 25), once the signal sysdeps of mlibc (item 3) exist.
-3. Small items between the large ones: `kill(-1)` (18), `SIGSUSPEND` (15), `SYSINFO` (20) and `GETRLIMIT`, `SETRLIMIT` (22).
+1. The rest of `tmpfs` (item 23): `rename`, `link`, `symlink`, `readlink`. Then shared anonymous memory (item 24).
+2. The address types in the rest of the kernel: `kmalloc`, `kstack`, `mmio` and the drivers still keep kernel addresses as numbers.
+3. Job control (item 25), once the signal sysdeps of mlibc (item 3) exist.
+4. Small items between the large ones: `kill(-1)` (18), `SIGSUSPEND` (15), `SYSINFO` (20) and `GETRLIMIT`, `SETRLIMIT` (22).
 
 ## Decisions made while implementing
 
@@ -480,6 +484,19 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - `SETHOSTNAME` takes the lengths up to 255, not 64 as Linux does, because the `nodename` field has 256 bytes.
 - Commit accounting: private writable memory counts, and the account follows the region (item 31). A mapping that replaces others
   gets a credit for the pages that it replaces. `MAP_NORESERVE` takes `CAP_VM_NORESERVE` and a `flags` argument of `vms_map*`.
+- `tmpfs` pins every node it makes: `create` calls `vcache_insert_pinned` itself, sets the parent of a directory, and the VFS keeps what the
+  filesystem gave it. The filesystem owns one reference for as long as a node has a name, and `unmount` drops them.
+- `parse_size_iec` in `libk/hrsize.c` reads `16k`, `4M`, `1GiB` and the like, for mount options and the command line.
+- A system call handler is a plain function whose parameters are the registers that the call reads (`proc/syscall_internal.h`).
+  `define_syscall(fn, number, count)` counts the registers. `define_syscall_fd` hands the handler a `file_t*` for the descriptor, and
+  `define_syscall_dirfd` hands it the `int` and the path copied from user space. A new kind of macro is only for what the dispatcher must
+  do around the handler.
+- Addresses have types (`vex/types.h`, `vex/address.h`). `user_addr_t` is a transparent union, so that a wrapper passes it a register, and a
+  handler cannot use it as a number or a pointer. `virt_addr_t` and `phys_addr_t` are structs that take no plain integer. A null physical
+  address still means no frame. The user ABI has `__k_uintptr_t`, `__k_intptr_t` and `__k_size_t`; the width of a pointer comes from
+  `arch/types.h`.
+- CONTRIBUTING has two style rules from this work: no call in the middle of the arguments of another call, and a condition of three
+  operands at most.
 - Access to a file is checked in `open` only. A descriptor is a right that was granted, so `read` does not look at credentials again. A
   check on every access would belong to a security module, as `security_file_permission` in Linux.
 
@@ -490,6 +507,8 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - The `Readv` and `Writev` sysdeps, and `Pread` and `Pwrite`, and `Sleep` as a relative `CLOCK_MONOTONIC` call of `SYS_NANOSLEEP`.
 - The `SetHostname` sysdep.
 - Everything in Tier 1: signals, threads, `Sysconf`.
+- `shm_open` and `sem_open` use `/run/shm/` (`options/posix/generic/sys-mman.cpp`), and `/run` is a `tmpfs` mount.
+- `struct iovec` has a `__k_uintptr_t` base and a `__k_size_t` length; the layout on amd64 is the same.
 
 ## Dependencies
 
@@ -510,7 +529,7 @@ The tiers are sorted by cost. These items are done earlier than their tier says:
 - Item 25 (job control) goes right after Tier 2, before items 15 (`sigsuspend`) and 16 (`pipe2`). It does not depend on them. It does
   depend on the signal sysdeps (item 3) and on the renumbering (item 7), because a shell test needs both.
 
-- Item 31 goes right after item 13 and before item 23 (`ramfs`), not at the end of Tier 4.
+- Item 31 goes right after item 13 and before item 23 (`tmpfs`), not at the end of Tier 4.
 
 ## Open questions
 
@@ -532,7 +551,7 @@ The tiers are sorted by cost. These items are done earlier than their tier says:
   constants in the code, and `Kconfig` comes only when someone needs to change them. Decided.
 - [x] Process size budget: 512, small fields inline in sub-structures. Decided.
 - [x] Item 22: shared refcounted object (b). Decided.
-- [x] Item 23: how `ramfs` stores file pages: a memory mode in `fcache` (not a separate page store inside `ramfs`). Decided (delegated).
+- [x] Item 23: how `tmpfs` stores file pages: a memory mode in `fcache` (not a separate page store inside `tmpfs`). Decided (delegated).
 - [x] Item 25: job control moves before `pipe2` and `sigsuspend`. See "Priority overrides". Decided.
 - [x] Item 8: `pwrite` with `O_APPEND` follows POSIX and writes at the given offset. Decided.
 - [x] Item 8: a flag in `file_t` for streams, set at open, and a char device with no `seek` is a stream. Decided.
@@ -542,7 +561,7 @@ The tiers are sorted by cost. These items are done earlier than their tier says:
   No OOM killer for now. Decided.
 - [x] Item 9: one shared time helper for futex, sleep and the new call. Decided.
 - [x] Item 31: the limit is the `pslab` pages minus `max(1/8, 4096 pages)`. Decided.
-- [x] Item 31: shared anonymous memory and `ramfs` take pages from the one counter. The hidden file takes its whole size at creation, and
+- [x] Item 31: shared anonymous memory and `tmpfs` take pages from the one counter. The hidden file takes its whole size at creation, and
   a named file takes a page when it allocates one. Decided.
 - [x] Item 31: a mapping that replaces others checks the difference first, with a credit. Decided.
 - [x] Item 31: the `MAP_NORESERVE` flag goes in a `flags` argument of `vms_map*`, not in `vm_backing_t`. The capability is
