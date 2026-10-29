@@ -240,8 +240,8 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
     - Implement `FIONREAD`. The constant exists. Add the `Pipe` sysdep.
 17. **`SIGTIMEDWAIT`** (for `sigwait` and `sigtimedwait`). Take a signal from the pending set without a handler. Reuse the dequeue code of
     `signal_deliver`. The timeout works as in `sigsuspend`.
-18. **`kill(-1)`.** Walk all processes with the existing `may_signal` check. Skip init and the sender. This needs a process list iterator.
-    Check whether one exists.
+18. **`kill(-1)`.** Walk all processes with the existing `may_signal` check. Skip init and the sender. `process_for_each` (item 13) is the
+    iterator.
 19. **`SETITIMER`** (and `alarm`). One `ITIMER_REAL` timer per process on top of `clockevt`. At expiry send `SIGALRM`, and restart if the
     interval is not zero. Remove the timer on `exec` and `exit`. The state is about 48 bytes, owned by one process, so it goes inline in
     `process_t` once the budget is 512 bytes (see "Process size budget").
@@ -326,9 +326,12 @@ The order inside this tier follows what is wanted first, not only cost.
       nothing, and reclaim never takes the page, because the page is the only copy. The other way is a page store inside `ramfs`, which
       repeats the fault and the read code. The first way is cheaper.
     - Unlinked-but-open files must keep their pages (`release` frees them).
+    - Commit limit (item 31): a named file takes one page from the limit when the page is allocated, and gives it back when the page goes.
+      A write that does not fit returns `ENOSPC`, and a fault on a file that `ftruncate` made larger sends `SIGBUS`. There is no size limit of
+      its own: `/tmp` and private memory share the one limit.
     - Vnode types for FIFOs and devices are only a field here, so `mknodat` works on `ramfs` before it works on ext2.
 24. **Shared anonymous `mmap` and POSIX shared memory.** `MAP_SHARED | MAP_ANONYMOUS` creates a hidden unlinked `ramfs` file of the
-    size of the mapping and maps it. `shm_open` opens a file in `/dev/shm`. This also tests shared futexes (item 1) and process-shared
+    size of the mapping and maps it. The hidden file takes the whole size from the commit limit when it appears (item 31). `shm_open` opens a file in `/dev/shm`. This also tests shared futexes (item 1) and process-shared
     mutexes in mlibc.
 25. **Job control.** Decision: implement it. The existing pieces are `exit_to_user`, `pending_work`, `sched_kick`, `child_exited` and the
     tty foreground group.
@@ -367,7 +370,7 @@ The order inside this tier follows what is wanted first, not only cost.
 30. **The rest.** `MREMAP`, `FALLOCATE` (ext2 and `ramfs`, other file systems return `ENOSYS`), `CHROOT` (a root pointer in the process),
     `WAITID` (as `waitpid`, with `siginfo`), `SIGQUEUE` (needs a queue of real-time signals, not a bit mask).
 
-31. **Memory commit accounting.** Decision: strict, like the Windows commit charge and Linux `vm.overcommit_memory=2`. A call that
+31. ~~**Memory commit accounting.**~~ *Done.* Decision: strict, like the Windows commit charge and Linux `vm.overcommit_memory=2`. A call that
     would take the total over the limit fails with `ENOMEM` at the call, so that no process finds out about it on a page fault. It goes
     after item 13 and before `ramfs` (see "Priority overrides"), so that shared anonymous memory is counted from the start.
     - The account is a property of the region, not of the calls. `vm_region_t` gets a flag for a counted region, and its size is known from
@@ -389,6 +392,30 @@ The order inside this tier follows what is wanted first, not only cost.
       An OOM killer is not planned: strict accounting makes it rare. Come back to it when it is a problem.
     - Item 2 (`MAP_NORESERVE`) and item 12 (`mlock`) lie next to this. Item 22 (`RLIMIT_AS`, `RLIMIT_DATA`) is a different limit, per
       process.
+    - Done as planned, with these details:
+      - `mm/commit.c` has `commit_charge`, `commit_charge_replacing` and `commit_uncharge` on one atomic counter, with no lock. The limit
+        is `pslab_numpages` minus `max(pslab_numpages / 8, 4096)` pages, set at `initcall_bsp_pmm`. `pdma` is not counted, because only
+        drivers and the slab take pages from it. `pslab_numpages` and `pslab_numfree` are variables now, and the getters are gone.
+      - There is no flag for a counted region. `counts_commit` in `vms.c` gives the answer from the fields: not device, not shared, not
+        `noreserve`, and `VPROT_WRITE`. `alloc_region` takes the pages and `free_region` gives them back, so `split_region`, `munmap`,
+        `exec` and exit need no code. `destroy_region` is the part of `free_region` that takes nothing back: the list of stale regions
+        uses it, as the pages went already.
+      - `vms_map_any` passes the size to `alloc_region`, as the start is not known yet.
+      - `vms_protect` splits first, then counts the regions that start or stop counting. It takes the gain before it changes anything, and
+        a failure leaves the regions split, which a program does not see.
+      - `vms_map_replace` counts the pages that it replaces, and `commit_charge_replacing` lets the total pass the limit by that many for
+        a moment. The old mapping stays when the call fails. Until the replaced pages are given back, every other charge fails.
+      - `exec` builds the new image beside the old one, so both count for a while. This is accepted: a `fork` already paid for the old
+        image, and the new image is small.
+      - `MAP_NORESERVE` works for a process with `CAP_VM_NORESERVE` (number 50). The flag is the `flags` argument of `vms_map*`
+        (`VMS_NORESERVE`) and the field `noreserve` of the region. `vm_backing_t` is not the place: it describes only the file. Without
+        the capability the flag does nothing. The fault path already sends `SIGBUS` when a page is not available.
+      - `UNDONE:` a small part of the limit for the holders of `CAP_VM_NORESERVE`. `UNDONE:` a call that starts a program without a copy
+        of the address space.
+      - Shared anonymous memory (item 24) and `ramfs` (item 23) take pages from the same counter, and the charge belongs to the object
+        and not to the region, so that a `fork` does not count shared pages twice. The hidden file of item 24 takes its whole size at
+        creation, and a named `ramfs` file takes one page at a time.
+      - Tests: `ktest/test.commit.c`.
 
 ### Later, not scheduled
 
@@ -438,8 +465,9 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 ## Next steps
 
-1. Memory commit accounting (item 31), then `ramfs` (item 23) and shared anonymous memory (item 24).
+1. `ramfs` (item 23) and shared anonymous memory (item 24), with the charge rule of item 31.
 2. Job control (item 25), once the signal sysdeps of mlibc (item 3) exist.
+3. Small items between the large ones: `kill(-1)` (18), `SIGSUSPEND` (15), `SYSINFO` (20) and `GETRLIMIT`, `SETRLIMIT` (22).
 
 ## Decisions made while implementing
 
@@ -450,6 +478,8 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
   thread exit uses both kinds of key. Only a `MAP_SHARED` mapping gives a stable frame, and `usr/vex/futex.h` says so.
 - `MAP_POPULATE` faults the pages in with a read, one page at a time, and reports no error.
 - `SETHOSTNAME` takes the lengths up to 255, not 64 as Linux does, because the `nodename` field has 256 bytes.
+- Commit accounting: private writable memory counts, and the account follows the region (item 31). A mapping that replaces others
+  gets a credit for the pages that it replaces. `MAP_NORESERVE` takes `CAP_VM_NORESERVE` and a `flags` argument of `vms_map*`.
 - Access to a file is checked in `open` only. A descriptor is a right that was granted, so `read` does not look at credentials again. A
   check on every access would belong to a security module, as `security_file_permission` in Linux.
 
@@ -511,10 +541,15 @@ The tiers are sorted by cost. These items are done earlier than their tier says:
   `MAP_NORESERVE` works only for a process with a capability and is ignored for the others. `SIGBUS` when a fault cannot get a page.
   No OOM killer for now. Decided.
 - [x] Item 9: one shared time helper for futex, sleep and the new call. Decided.
+- [x] Item 31: the limit is the `pslab` pages minus `max(1/8, 4096 pages)`. Decided.
+- [x] Item 31: shared anonymous memory and `ramfs` take pages from the one counter. The hidden file takes its whole size at creation, and
+  a named file takes a page when it allocates one. Decided.
+- [x] Item 31: a mapping that replaces others checks the difference first, with a credit. Decided.
+- [x] Item 31: the `MAP_NORESERVE` flag goes in a `flags` argument of `vms_map*`, not in `vm_backing_t`. The capability is
+  `CAP_VM_NORESERVE`. Decided.
 
 ## Not verified
 
-- `kill(-1)`: whether a process list iterator exists (item 18).
 - The exact size of `process_t` (about 240 bytes by hand count) and the exact size of its mutex field.
 - The number that `RLIMIT_NOFILE` should return. `process_t` has `max_fds`, but the limit constant was not read.
 - `sys_sigreturn`: where it expects the stack pointer, for the restorer in item 3.
