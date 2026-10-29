@@ -191,7 +191,7 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
       reference to each process and may sleep). `who` of zero is the caller, its group, or its real uid.
     - `CAP_SYS_NICE` (23, as in Linux): needed to lower the nice value and to change the process of another user. A process of the same
       user, by effective uid, may raise its nice value. Errors as in Linux: `EPERM` for a process that is not ours, `EACCES` for the lowering.
-      `UNDONE:` `RLIMIT_NICE` lets a process lower it that far, with item 22.
+      `RLIMIT_NICE` lets a process lower it that far (item 22).
     - The only policy is `SCHED_OTHER` with priority 0. Anything else is `EINVAL`. `GETSCHEDRANGE(policy, range*)` writes `{0, 0}`.
       `GETSCHEDINTERVAL` gives the timeslice that the process has by its nice value. The `pid` of these calls is a process, and a
       negative one is `EINVAL`.
@@ -219,7 +219,7 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
 
 ### Tier 3: one new piece of kernel (M)
 
-15. **`SIGSUSPEND`** (and `pause`, which calls it with the current mask).
+15. ~~**`SIGSUSPEND`**~~ *Done* (`0x067`, the mask by pointer; `pause` calls it with the current mask in mlibc).
     - Add `saved_sigmask` and a flag to `thread_t`.
     - The call saves the mask, sets the new one, and waits with no timeout, as `sys_sleep` does.
     - Never return `-ERESTART`: the syscall would run again and overwrite the saved mask. Return `-EINTR` after the wait ends.
@@ -240,12 +240,11 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
     - Implement `FIONREAD`. The constant exists. Add the `Pipe` sysdep.
 17. **`SIGTIMEDWAIT`** (for `sigwait` and `sigtimedwait`). Take a signal from the pending set without a handler. Reuse the dequeue code of
     `signal_deliver`. The timeout works as in `sigsuspend`.
-18. **`kill(-1)`.** Walk all processes with the existing `may_signal` check. Skip init and the sender. `process_for_each` (item 13) is the
-    iterator.
+18. ~~**`kill(-1)`.**~~ *Done.* Every process but init and the sender; 0 if one was signalled, `EPERM` if none may be, `ESRCH` if there are none.
 19. **`SETITIMER`** (and `alarm`). One `ITIMER_REAL` timer per process on top of `clockevt`. At expiry send `SIGALRM`, and restart if the
     interval is not zero. Remove the timer on `exec` and `exit`. The state is about 48 bytes, owned by one process, so it goes inline in
     `process_t` once the budget is 512 bytes (see "Process size budget").
-20. **`SYSINFO`.** One structure: online CPUs, total and free pages, uptime. Take the data from `hart` and `pframe`. Then `Sysconf` can use it.
+20. ~~**`SYSINFO`.**~~ *Done* (`0x126`, `usr/vex/sysinfo.h`; `total_pages` is `pslab` only). One structure: online CPUs, total and free pages, uptime. Take the data from `hart` and `pframe`. Then `Sysconf` can use it.
 21. **Random numbers.** Decision: a Linux/FreeBSD-style split into noise, a pool, and generators.
     - **Noise sources** (a registry, one entry per source, with a name and a trust flag) only *contribute* to an entropy pool. They are not
       read by users. There are two kinds:
@@ -302,7 +301,7 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
         UEFI RNG it is good in fact, and the pool also gets the polled sources of the kernel.
       - The array is in bootloader reclaimable memory. Mix the values in, then zero the array before the memory is reused.
     - The state of MT19937-64 is 312 words (about 2.5 KiB), more than `SLAB_MAX_SIZE`, so allocate it with `kmalloc` at hart start.
-22. **`GETRLIMIT`, `SETRLIMIT`.**
+22. ~~**`GETRLIMIT`, `SETRLIMIT`.**~~ *Done* for the store, `RLIMIT_NOFILE` and `RLIMIT_STACK` (`0x127`, `0x128`).
     - Limits are per process, and the threads of a process already share them through `process_t`. A table of 16 limits with two 8 byte
       values is 256 bytes. It is needed in every process, but almost every process has the limits of its parent.
     - Two ways. (a) Inline: raise the budget to 512 and put a compact table in `process_t`. There is no lifetime to manage and `fork`
@@ -313,12 +312,20 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
     - Enforce `NOFILE` (the fd table has `max_fds`) and `STACK` first. Store the other limits without enforcing them.
     - Add `static_assert(sizeof(rlimits_t) <= SLAB_MAX_SIZE)`. Check the new size of `process_t` with a build before you add a field.
     - Enforce `MEMLOCK` and add `CAP_IPC_LOCK` for item 12 here.
+    - Done: the limits are one refcounted object in `process_t` (`proc/rlimit.c`); a change copies it under `process->lock`. The
+      numbers are the Linux ones, and the hard limit goes up only with the new `CAP_SYS_RESOURCE` (24). `RLIMIT_NOFILE` caps the
+      descriptor table (`EMFILE`; `dup2` past it gives `EBADF`, `F_DUPFD` past it `EINVAL`; a limit under the descriptors in use only
+      turns away new ones), and its hard limit may not pass `CONFIG_MAX_FDS`. `RLIMIT_STACK` sizes the stack that exec maps: 64 KiB
+      at least, 1 GiB at most, and `RLIM_INFINITY` gives the default. The other limits are stored only.
+    - Done: `RLIMIT_NICE` lets a process without `CAP_SYS_NICE` lower its nice value down to `20 - rlim_cur`.
+    - `UNDONE:` `RLIMIT_MEMLOCK` with `CAP_IPC_LOCK` for `mlock`.
+    - `UNDONE:` the stack does not grow, so `RLIMIT_STACK` is its whole size.
 
 ### Tier 4: expensive (L)
 
 The order inside this tier follows what is wanted first, not only cost.
 
-23. **`tmpfs`** (a memory file system), planned from the start. *Partly done.*
+23. ~~**`tmpfs`** (a memory file system), planned from the start.~~ *Done.*
     - A `vfs_driver` named `tmpfs`, mounted for `/tmp` and `/run`. It has files, directories and symlinks with all data in memory.
       It needs `lookup`, `iterate` (a cookie that survives `unlink`), `create`, `unlink`, `rename`, `link`, `symlink`, `read`, `write`,
       `set_attr`, `stat`, `fault`.
@@ -331,12 +338,18 @@ The order inside this tier follows what is wanted first, not only cost.
     - Vnode types for FIFOs and devices are only a field here, so `mknodat` works on `tmpfs` before it works on ext2.
     - Done: mount and its options (`size=`, `nodes=`, `mode=`, `uid=`, `gid=`), `statvfs`, files, directories, `lookup`, `iterate`,
       `create`, `unlink`, `read`, `write`, `stat`, `set_attr`, `fault`, and `ktest/test.tmpfs.c`.
-    - Still to do: `rename`, `link`, `symlink` and `readlink`. A symlink target goes into a slab object of its own length, and a target
-      of `SLAB_MAX_SIZE` bytes or more gives `ENAMETOOLONG`.
-24. **Shared anonymous `mmap` and POSIX shared memory.** `MAP_SHARED | MAP_ANONYMOUS` creates a hidden unlinked `tmpfs` file of the
-    size of the mapping and maps it. The hidden file takes the whole size from the commit limit when it appears (item 31). `shm_open` opens a file in `/run/shm`, a `tmpfs` mount: devfs is a pseudo file system and has no directories, and the path is a detail of mlibc. This also tests shared futexes (item 1) and process-shared
-    mutexes in mlibc.
-25. **Job control.** Decision: implement it. The existing pieces are `exit_to_user`, `pending_work`, `sched_kick`, `child_exited` and the
+    - Done later: `rename`, `link`, `symlink` and `readlink`. A symlink target is a slab object up to `SLAB_MAX_SIZE` bytes and a
+      `pslab` page above that, up to `PATH_MAX - 1` bytes. `UNDONE:` the targets are not counted in the limits of the mount.
+24. ~~**Shared anonymous `mmap` and POSIX shared memory.**~~ *Done* (`shm_open` needs no kernel work).
+    - `MAP_SHARED | MAP_ANONYMOUS` maps a file that no name leads to. `kernel/mm/shmem.c` (`vex/shmem.h`) keeps an internal tmpfs
+      that `vfs_create` makes, and makes the file with a name that it removes at once. The file takes its whole size from the commit
+      limit when the mapping appears (`ENOMEM` if it does not fit) and gives it back with the last reference. A part `munmap` returns
+      nothing. `MAP_NORESERVE` has no effect on it.
+    - The service names the `tmpfs` driver with a string and uses only `vfs_*`, `vnode_*` and `file_*`. A filesystem has no public
+      header (architecture.md). `UNDONE:` a `tmpfile` vnode operation would save the create and unlink.
+    - `shm_open` is a file in `/run/shm`, a `tmpfs` mount. The mount itself belongs to init and mlibc.
+    - Tests: `ktest/test.shmem.c`.
+25. ~~**Job control.**~~ *Done* in the kernel. Decision: implement it. The existing pieces are `exit_to_user`, `pending_work`, `sched_kick`, `child_exited` and the
     tty foreground group.
     - State: stopped or running, the stop signal, "stop not yet reported", "continue not yet reported", and an `event_t` for the threads
       that wait to continue. Decision: one inline sub-structure `job_control_t job` in `process_t`, about 32 bytes (see "Process size
@@ -354,6 +367,23 @@ The order inside this tier follows what is wanted first, not only cost.
     - tty: a read from a background group sends `SIGTTIN`. A write with `TOSTOP`, and a `tcsetattr` from the background, send `SIGTTOU`.
       An orphaned group, or a blocked or ignored signal, gives `EIO` instead.
     - Orphaned process groups: when a group becomes orphaned with stopped members, send `SIGHUP` and `SIGCONT`. Do it after the rest works.
+    - Done: one inline `job_control_t job` in `process_t` (`proc/job.c`). A default stop sets `THREAD_WORK_STOP` on every thread, and a
+      thread parks in `exit_to_user` on `job.resume`, which no signal ends (SIGKILL and exec wake it through `job_wake_locked`). `SIGCONT`
+      acts at send time (`job_effects` in `signal.c`) and drops the pending stop signals, a stop signal drops a pending `SIGCONT`.
+      `waitpid` takes `WUNTRACED` and `WCONTINUED` (`0x7f | sig << 8`, `0xffff`), a report is taken once with an atomic bit, and the
+      parent gets `SIGCHLD` unless `SA_NOCLDSTOP`.
+    - Done: a wait that returns `-ERESTART` and does not restart itself (`nanosleep`, `sigsuspend`) calls `job_resume_wait`. It delivers
+      the signals that run no handler, parks for a stop, and goes on. A stop does not end `sigsuspend`.
+    - Done: a background group gets `SIGTTIN` on a read, and `SIGTTOU` on a write with `TOSTOP` and on `TCSETS*`, with `-ERESTART`; a
+      refused `SIGTTIN` or an orphaned group gives `EIO`, a refused `SIGTTOU` lets the access through (`tty_interface.c`).
+    - Done: a group is orphaned when no member has a parent outside it in the same session (`process_group_orphaned_locked`; exited
+      members and children of init do not count). When an exit cuts the last tie and a member is stopped, the group gets `SIGHUP` and
+      `SIGCONT`. The exiting thread does it in `sched_terminate` (`process_check_orphans`), not in `begin_exit`, which can run under
+      the lock of the groups. The signals of a terminal do not stop a process of an orphaned group.
+    - Done: a `setpgid` or `setsid` that cuts the last tie of a group hangs it up like an exit (Linux does not do this, POSIX does), and
+      `tcsetpgrp` from the background sends `SIGTTOU` (`TIOCSPGRP`; a shell ignores `SIGTTOU` around it).
+    - `UNDONE:` `ptrace` stops, and `CLD_TRAPPED`, do not exist.
+    - Still to do in mlibc: the `WUNTRACED`/`WCONTINUED` options and the status macros, `SA_NOCLDSTOP`, and a shell test.
     - Check `SIGTSTP`, which the tty already sends on `^Z`.
 26. **`PPOLL`** (and `poll`, `select`, `pselect` on top of it in mlibc).
     - A loop of "check all, then wait on an event array" loses wakeups: `event_await_unlock` holds one lock, the files have different locks,
@@ -468,10 +498,9 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 ## Next steps
 
-1. The rest of `tmpfs` (item 23): `rename`, `link`, `symlink`, `readlink`. Then shared anonymous memory (item 24).
-2. The address types in the rest of the kernel: `kmalloc`, `kstack`, `mmio` and the drivers still keep kernel addresses as numbers.
-3. Job control (item 25), once the signal sysdeps of mlibc (item 3) exist.
-4. Small items between the large ones: `kill(-1)` (18), `SIGSUSPEND` (15), `SYSINFO` (20) and `GETRLIMIT`, `SETRLIMIT` (22).
+1. `PIPE2` (item 16) and `PPOLL` (item 26): `vfs_create` and `event_sleep` exist now.
+2. `SIGTIMEDWAIT` (17) and `SETITIMER` (19).
+3. `FLOCK` (27), CPU time (28) and the rest.
 
 ## Decisions made while implementing
 
