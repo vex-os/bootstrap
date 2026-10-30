@@ -455,9 +455,18 @@ The order inside this tier follows what is wanted first, not only cost.
       `usr/vex/resource.h` has the Linux layout. Done also: `ru_maxrss` (the peak of resident pages that rmap counts, kept over an exec; the children give their maximum), `ru_minflt`, `ru_nvcsw`, `ru_nivcsw` and `ru_nsignals`. `ru_majflt` (`VMS_FAULT_MAJOR` from `fcache_fault` when the page was not in the cache), `ru_inblock` (in `block_read`, for the thread that waits) and `ru_oublock` (when a page becomes dirty, for the thread that dirties it, and in `devfs_block_write`), in units of `S_BLKSIZE` (512), which `st_blocks` now uses in every filesystem. A truncation does not take cancelled writes off `ru_oublock`, unlike Linux. A stop or a continue reports the usage of the child so far. `waitpid` and `waitid` get a `rusage`
       argument that can be `nullptr`. This breaks the ABI, and the mlibc stage repairs it. `times` goes in mlibc on top of `getrusage`
       and `CLOCK_MONOTONIC`, with no syscall.
-29. **`MKNODAT` and named FIFOs.** First on `tmpfs` (a vnode of type FIFO or device, in memory). Opening a FIFO inode resolves to a pipe object
-    that lives with the vnode. An open for read blocks until a writer exists. Then ext2: it must store and read the device and FIFO inode
-    types and `rdev`, and `create` must accept the new types.
+29. ~~**`MKNODAT` and named FIFOs.**~~ *Done* (`SYS_MKNODAT` is `0xF0`, `CAP_MKNOD` = 27; `ktest/test.fifo.c`).
+    - A FIFO or a device node of a filesystem gets `special_ops` from `vnode_init_special`: open, close, read, write, seek, ioctl and poll go
+      there, and stat, setattr and the rest stay with the filesystem, as `i_fop` in Linux. So `fstat`, the permissions and the locks are the
+      ones of the real inode. A filesystem makes such nodes through the `mknod` operation; without it, `mknodat` fails with `EPERM`.
+    - The pipe of a FIFO lives in `special_data` from the first open to the last close, and its data goes with the last close. An open for
+      reading waits for a writer and one for writing waits for a reader; with `O_NONBLOCK` the reader goes on and the writer fails with
+      `ENXIO`; `O_RDWR` never waits. A waiter counts the opens of the other end, so one that came and went is not missed.
+    - `tmpfs` keeps FIFOs and device nodes with `rdev`; ext2 keeps FIFOs. A type of zero or `S_IFREG` makes a regular file, as in Linux.
+    - Device nodes outside devfs only show their type and `rdev`; their open fails with `ENXIO`. `UNDONE:` finding the interface by `rdev`,
+      with a `nodev` mount option, when something needs it. ext2 makes no device nodes: `dev_t` takes 64 bits, and an inode of ext2 has 32.
+    - On the way, `mount` and `umount` resolve the mount point as any other path: from the working directory and the root of the
+      caller, with its permissions. `umount` finds the mount by its filesystem, not by the text of the path.
 30. **The rest.** `MREMAP`, `FALLOCATE` (ext2 and `tmpfs`, other file systems return `ENOSYS`), ~~`CHROOT`~~ (*done*, `0xEF`, `CAP_SYS_CHROOT` = 18; `process->root` is inherited by a fork and kept by an exec; the path code gets it through `path_set_root_source`, and `..` and absolute symlinks stop at it; the working directory is not moved, so a process that keeps one outside the new root can leave through it, as in Linux; `ktest/test.chroot.c`),
     ~~`WAITID`~~ (*done*, `0x035`: `P_ALL`, `P_PID`, `P_PGID`, `WEXITED`, `WSTOPPED`, `WCONTINUED`, `WNOHANG`, `WNOWAIT`; shares `wait_child` with `waitpid`; `ktest/test.waitid.c`), `SIGQUEUE` (needs a queue of real-time signals, not a bit mask).
 
@@ -613,6 +622,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - `getrusage` on `SYS_GETRUSAGE`, `times` on `getrusage` and `CLOCK_MONOTONIC`, and `clock_gettime` with the CPU time clocks.
 - `fcntl` with `F_GETLK`, `F_SETLK`, `F_SETLKW` and the `F_OFD_*` commands (our numbers, 6 to 11), `struct __k_flock`, and `flock` on
   `SYS_FLOCK` with `LOCK_*` from `usr/vex/fcntl.h`.
+- `mkfifo`, `mknod` and `mknodat` on `SYS_MKNODAT` (`dirfd, path, mode, dev`).
 - `struct iovec` has a `__k_uintptr_t` base and a `__k_size_t` length; the layout on amd64 is the same.
 
 ## Dependencies
