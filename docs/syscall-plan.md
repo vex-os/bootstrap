@@ -416,6 +416,35 @@ The order inside this tier follows what is wanted first, not only cost.
     `ENOSYS`.
 28. **CPU time:** `CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID`, `getrusage`, `times`, and the `rusage` result of `waitpid`. A
     nanosecond counter in `thread_t`, updated at each context switch. Sum it per process and for waited children.
+    - **Counter.** The time comes from a cycle counter of the hart, not from a clock source. Counters of two harts can differ, so a
+      value is only compared with a value of the same hart. A thread starts and ends each run on one hart, so this is sufficient. The
+      cycle counter never becomes a `clock_source`.
+    - **Arch interface** (`<arch/cycles.h>`): `arch_cycles_read()` (`static __always_inline`), a probe that tells if the counter has a
+      constant rate, and the frequency when the arch knows it. amd64 uses `rdtsc`. riscv64 (`rdtime`, `timebase-frequency`) and aarch64
+      (`CNTVCT_EL0`, `CNTFRQ_EL0`) know the frequency and need no calibration.
+    - **Generic part** (`kernel/time/cycles.c`): mult and shift as in `clocksrc.c`, the conversion to nanoseconds, and the calibration.
+    - **Calibration**, when the arch gives no frequency: once on the boot hart, against the active clock source, as `lapic_timer.c` does.
+      At each end of the window, take several samples of "counter, clock source, counter" and keep the narrowest. Window 20 to 50 ms,
+      3 to 5 rounds, the median wins. On amd64 a frequency from CPUID `0x15`/`0x16` or the hypervisor leaf `0x40000010` is used when
+      present, and a difference of more than about 1% against the calibration gives `pr_warning`.
+    - **When the TSC is usable.** Accounting needs a constant rate, not a TSC that runs in deep C-states: the TSC stops there only while
+      the hart is idle. So the TSC is usable when one of these is true: CPUID says invtsc; the hypervisor bit is set (QEMU, KVM and
+      Hyper-V give a virtual TSC with a constant rate; the default `qemu64` CPU of `ktest` has no invtsc); the family and model have a
+      constant TSC (Intel from Core 2, AMD from family `0x10`), as Linux sets `CONSTANT_TSC`. Otherwise the counter is
+      `clock_source_now_ns()`: correct, but slow (a global lock and an HPET read), which matters only on K8 and early Pentium 4. The
+      command line option `cputime=clocksrc` selects that path, to test it.
+    - `NOTE:` a TSC that stops in deep C-states makes the idle time of a hart too small. This matters only for idle accounting later.
+    - **User and system time** are exact from the start: the counter is read at every entry to the kernel (system call, interrupt,
+      exception) and at every exit to user mode, and at each context switch.
+    - A thread gives its time to its process when it exits. A process gives its own time and the time of its children to the
+      `children` fields of its parent at `wait`.
+    - `CLOCK_THREAD_CPUTIME_ID` for the caller: the stored time plus the current run. `CLOCK_PROCESS_CPUTIME_ID`: the time of the
+      process plus the threads that live. A thread that runs on another hart lags by its current run, at most one timeslice, as the
+      counter of another hart cannot be read.
+    - **ABI.** `GETRUSAGE(who, usage)` with `RUSAGE_SELF`, `RUSAGE_CHILDREN`, `RUSAGE_THREAD`. `struct __k_rusage` in
+      `usr/vex/resource.h` has the Linux layout. Fields other than the times are zero for now. `waitpid` and `waitid` get a `rusage`
+      argument that can be `nullptr`. This breaks the ABI, and the mlibc stage repairs it. `times` goes in mlibc on top of `getrusage`
+      and `CLOCK_MONOTONIC`, with no syscall.
 29. **`MKNODAT` and named FIFOs.** First on `tmpfs` (a vnode of type FIFO or device, in memory). Opening a FIFO inode resolves to a pipe object
     that lives with the vnode. An open for read blocks until a writer exists. Then ext2: it must store and read the device and FIFO inode
     types and `rdev`, and `create` must accept the new types.
