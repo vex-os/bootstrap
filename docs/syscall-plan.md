@@ -442,7 +442,7 @@ The order inside this tier follows what is wanted first, not only cost.
       process plus the threads that live. A thread that runs on another hart lags by its current run, at most one timeslice, as the
       counter of another hart cannot be read.
     - **ABI.** `GETRUSAGE(who, usage)` with `RUSAGE_SELF`, `RUSAGE_CHILDREN`, `RUSAGE_THREAD`. `struct __k_rusage` in
-      `usr/vex/resource.h` has the Linux layout. Fields other than the times are zero for now. `waitpid` and `waitid` get a `rusage`
+      `usr/vex/resource.h` has the Linux layout. Done also: `ru_maxrss` (the peak of resident pages that rmap counts, kept over an exec; the children give their maximum), `ru_minflt`, `ru_nvcsw`, `ru_nivcsw` and `ru_nsignals`. `UNDONE:` `ru_majflt` needs `fcache` to tell that a fault read the disk. `ru_inblock` and `ru_oublock` stay zero, as writeback does not run for the thread that wrote. A stop or a continue reports the usage of the child so far. `waitpid` and `waitid` get a `rusage`
       argument that can be `nullptr`. This breaks the ABI, and the mlibc stage repairs it. `times` goes in mlibc on top of `getrusage`
       and `CLOCK_MONOTONIC`, with no syscall.
 29. **`MKNODAT` and named FIFOs.** First on `tmpfs` (a vnode of type FIFO or device, in memory). Opening a FIFO inode resolves to a pipe object
