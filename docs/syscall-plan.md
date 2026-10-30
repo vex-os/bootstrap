@@ -333,7 +333,8 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
       at least, 1 GiB at most, and `RLIM_INFINITY` gives the default. The other limits are stored only.
     - Done: `RLIMIT_NICE` lets a process without `CAP_SYS_NICE` lower its nice value down to `20 - rlim_cur`.
     - `UNDONE:` `RLIMIT_MEMLOCK` with `CAP_IPC_LOCK` for `mlock`.
-    - `UNDONE:` the stack does not grow, so `RLIMIT_STACK` is its whole size.
+    - Done: the stack grows. Exec maps 128 KiB, and a fault under the stack grows it down to `RLIMIT_STACK`, with a guard gap of 256 pages
+      under it, as in Linux. The growth takes its pages from the commit limit when it happens; a fault that gets none ends in `SIGSEGV`.
 
 ### Tier 4: expensive (L)
 
