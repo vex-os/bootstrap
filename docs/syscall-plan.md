@@ -42,7 +42,7 @@ subsystems. The futex item is first although it is not the cheapest, because it 
 | Job control | `SIGSTOP`, `SIGTSTP`, `SIGTTIN`, `SIGTTOU` and `SIGCONT` are only rows in `default_actions`. `ignored_locked` treats them as ignored. | Nothing stops. `WUNTRACED` cannot return anything. |
 | tty | The tty keeps a foreground group and sends `SIGINT` and `SIGTSTP` to it. Nothing sends `SIGTTIN` or `SIGTTOU`. | Background read and write control is missing. |
 | ext2 | `create` accepts only file, directory and symlink. The type mapping says "no vnode types for devices, FIFOs and sockets yet". | `mknodat` on ext2 needs inode type work. |
-| Random numbers | No RDRAND, no RDSEED, no `/dev/urandom`. | `getrandom` starts from zero. |
+| Random numbers | No RDRAND, no RDSEED, no `/dev/urandom`. | `getrandom` starts from zero (done, item 21). |
 | `uname` | `nodename` is the literal `"IMPLEMENT_ME"`. `struct __k_utsname` has no `domainname`. mlibc fills `domainname` with a fixed string. | `sethostname` fixes the first. See the open question about the second. |
 | Capabilities | `CAP_SYS_ADMIN` exists. `CAP_IPC_LOCK` does not. | Use the first for `sethostname`. `mlock` gets a capability when limits arrive. |
 | auxv | `AT_PAGESZ` and `AT_CLKTCK` exist. | `sysconf` gets the page size and the tick rate without a syscall. |
@@ -64,7 +64,7 @@ path block, so it cannot take the new calls.
 | Descriptor | `0xC0`-`0xDF` | OPENAT ... FCNTL, PREAD (done), PWRITE (done) | PIPE (done, `0xD3`), PPOLL, READV (done, `0xCF`), WRITEV (done, `0xD0`), PREADV (done, `0xD1`), PWRITEV (done, `0xD2`), FLOCK, FALLOCATE |
 | Path | `0xE0`-`0xFF` | FSTATAT ... FACCESSAT | MKNODAT, CHROOT |
 | xattr, vfs | `0x100`-`0x11F` | GETXATTRAT ... REMOVEXATTRAT, MOUNT, UMOUNT, SYNC, SYNCFS, STATVFS | none |
-| System | `0x120`-`0x13F` | UNAME, GETTIME, SETTIME, SETHOSTNAME (done), NANOSLEEP (done, `0x124`; replaces SLEEP) | GETTIMERES (done, `0x125`), GETRLIMIT, SETRLIMIT, GETRANDOM, SYSINFO |
+| System | `0x120`-`0x13F` | UNAME, GETTIME, SETTIME, SETHOSTNAME (done), NANOSLEEP (done, `0x124`; replaces SLEEP) | GETTIMERES (done, `0x125`), GETRLIMIT, SETRLIMIT, GETRANDOM (done, `0x12A`), SYSINFO |
 
 The calls that take a clock id have no `CLOCK_` in their names (`GETTIME`, `NANOSLEEP`, `GETTIMERES`), so that a `__k_SYS_*` number cannot be
 mistaken for a clock id (`__k_CLOCK_*`). mlibc still calls them `clock_*`.
@@ -273,7 +273,10 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
       first `setitimer` of a CPU timer makes (`ENOMEM` if it cannot), a fork does not inherit it, an exec keeps it, and the last reference
       to the process frees it. `process_t` is exactly 512 bytes now: the next field breaks the build, as intended.
 20. ~~**`SYSINFO`.**~~ *Done* (`0x126`, `usr/vex/sysinfo.h`; `total_pages` is `pslab` only). One structure: online CPUs, total and free pages, uptime. Take the data from `hart` and `pframe`. Then `Sysconf` can use it.
-21. **Random numbers.** Decision: a Linux/FreeBSD-style split into noise, a pool, and generators.
+21. ~~**Random numbers.**~~ *Done* for the pool, the `chacha20` generator, `GETRANDOM` (`0x12A`, `usr/vex/random.h`), `/dev/random`,
+    `/dev/urandom` and the sources (`kernel/random/`, `kernel/arch/amd64/random/`, `ktest/test.random.c`). Not done yet: SHA-256,
+    `mt19937-64`, the `random=` option, virtio-rng and the floppy source. "Decisions made while implementing" lists what changed.
+    Decision: a Linux/FreeBSD-style split into noise, a pool, and generators.
     - **Noise sources** (a registry, one entry per source, with a name and a trust flag) only *contribute* to an entropy pool. They are not
       read by users. There are two kinds:
       - Event sources push small samples from interrupt context: IRQ timing, input and disk completion timing. The call must be cheap and
@@ -614,7 +617,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 ## Next steps
 
-1. `GETRANDOM` (21) and the rest.
+1. The rest of item 21 when a user needs it, and the follow-up for mlibc.
 
 ## Decisions made while implementing
 
@@ -656,6 +659,25 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - The `pollfd` entries of `PPOLL` live in chunks: 8 on the stack, then one page from `pslab` for each further chunk. No `kmalloc`, except
   that `thread->events` grows once to the largest number of events that the thread has waited on.
 
+- Random numbers (item 21):
+  - Limine v11 does not answer `limine_entropy_request`. The kernel sends it and takes the values when a later Limine answers.
+    `GETRANDOM` without `GRND_INSECURE` would hang init without another source, so the kernel polls RDSEED, RDRAND and a jitter
+    source of its own from the start.
+  - The sources are a registry in a linker section (`.random_sources`, `vex/random_source.h`). `define_random_source_polled` is for a
+    source that the pool asks; its credit is a constant share of a full poll. `define_random_source_event` is for a source that
+    pushes events, such as `irq`; it has no `poll`, and its credit is one bit for `events_per_bit` events. `random.trust_<name>=0`
+    or `=1` overrides whether a source earns credit. The credits: `rdseed` and `limine` full, `rdrand` none unless trusted,
+    `jitter` 1 bit for 8 measurements, `irq` 1 bit for 64 interrupts.
+  - The events go to a buffer for each hart, and a kernel thread folds them into the pool. A full buffer and a reader that finds the
+    pool short wake it. No timer wakes it. The read path also polls, so safety does not depend on the thread.
+  - `GRND_RANDOM` is not in the ABI: it would only be a name for the default. `GRND_INSECURE` has its value. A call with an unknown
+    bit fails with `EINVAL`. Before the first seed, `GRND_INSECURE` reads a key that comes from what the pool holds so far.
+  - `/dev/random` and `/dev/urandom` are the same and both wait for the first seed, as on FreeBSD. POSIX does not specify them. A
+    write mixes data into the pool without credit.
+  - The QEMU script runs the `max` CPU model, and its `nocpurng` option hides RDRAND and RDSEED. With `max`, XSAVE ran for the first
+    time and showed that `fork` left the XSAVE header of the child as the stack had it, so `XRSTOR` faulted. `fork` now starts
+    from the initial state.
+
 ### Follow-up for mlibc (a session of its own)
 
 - The new `MAP_*` flags in `abi-bits/vm-flags.h`.
@@ -675,6 +697,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - `mremap` (`VmRemap`) on `SYS_MREMAP`, always with `MREMAP_MAYMOVE`.
 - `posix_fallocate` on `SYS_FALLOCATE` (`fd, mode, offset, length`).
 - `mkfifo`, `mknod` and `mknodat` on `SYS_MKNODAT` (`dirfd, path, mode, dev`).
+- `getrandom` on `SYS_GETRANDOM` with the flags of `usr/vex/random.h`, and the `GetEntropy` sysdep on top of it.
 - `struct iovec` has a `__k_uintptr_t` base and a `__k_size_t` length; the layout on amd64 is the same.
 
 ## Dependencies
