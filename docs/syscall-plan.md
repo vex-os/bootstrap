@@ -474,7 +474,7 @@ The order inside this tier follows what is wanted first, not only cost.
       with a `nodev` mount option, when something needs it. ext2 makes no device nodes: `dev_t` takes 64 bits, and an inode of ext2 has 32.
     - On the way, `mount` and `umount` resolve the mount point as any other path: from the working directory and the root of the
       caller, with its permissions. `umount` finds the mount by its filesystem, not by the text of the path.
-30. **The rest.** `MREMAP`, `FALLOCATE` (ext2 and `tmpfs`, other file systems return `ENOSYS`), ~~`CHROOT`~~ (*done*, `0xEF`, `CAP_SYS_CHROOT` = 18; `process->root` is inherited by a fork and kept by an exec; the path code gets it through `path_set_root_source`, and `..` and absolute symlinks stop at it; the working directory is not moved, so a process that keeps one outside the new root can leave through it, as in Linux; `ktest/test.chroot.c`),
+30. **The rest.** `MREMAP`, ~~`FALLOCATE`~~ (*done*, `0xD6`, see below), ~~`CHROOT`~~ (*done*, `0xEF`, `CAP_SYS_CHROOT` = 18; `process->root` is inherited by a fork and kept by an exec; the path code gets it through `path_set_root_source`, and `..` and absolute symlinks stop at it; the working directory is not moved, so a process that keeps one outside the new root can leave through it, as in Linux; `ktest/test.chroot.c`),
     ~~`WAITID`~~ (*done*, `0x035`: `P_ALL`, `P_PID`, `P_PGID`, `WEXITED`, `WSTOPPED`, `WCONTINUED`, `WNOHANG`, `WNOWAIT`; shares `wait_child` with `waitpid`; `ktest/test.waitid.c`), ~~`SIGQUEUE`~~ (*done*, `0x069`, see below).
 
     - `SIGQUEUE` details. `SIGQUEUE(pid, sig, value)`: the value is a whole register that goes to `si_value`, `sival_int` being its low half.
@@ -489,6 +489,17 @@ The order inside this tier follows what is wanted first, not only cost.
       only (in the part of `kern_sig.c` that was read), and so does the kernel here: it is a choice and not a debt. Tests: `ktest/test.sigqueue.c`. The permission check (`EPERM`) is not
       tested, because the test runs as root.
     - Still to do in mlibc: the `Sigqueue` sysdep (`posix_signal.cpp` calls `Sigqueue(pid, sig, val)`) and `sysconf(_SC_SIGQUEUE_MAX)`.
+
+    - `FALLOCATE(fd, mode, offset, length)`: mode 0 (`posix_fallocate`) and `FALLOC_FL_KEEP_SIZE`. The other Linux modes (`PUNCH_HOLE`,
+      `ZERO_RANGE`, `COLLAPSE_RANGE`, `INSERT_RANGE`) give `EOPNOTSUPP`, as does a filesystem without the new `fallocate` vnode operation.
+      Errors: `EBADF`, `ESPIPE` (FIFO), `EISDIR`, `ENODEV`, `EINVAL`, `EFBIG`, `ENOSPC`. After `ENOSPC` the blocks that were made stay,
+      and the size does not change.
+    - ext2: `ext2_preallocate` takes the blocks of the range, and a new data block is zeroed on the volume at once (ext2 has no unwritten
+      extents, so a large range costs real writes). It goes straight to the volume and not to the device cache, as a read of a file does
+      not see that cache. `KEEP_SIZE` works there: the blocks past the end stay until a truncate. `tmpfs`: the commit limit counts the
+      whole size, holes included, so mode 0 is a resize, and `KEEP_SIZE` gives `EOPNOTSUPP`. FAT and echfs store no holes, so
+      `vnode_fallocate_grow` only grows the file. Tests: `ktest/test.fallocate.c`.
+    - Still to do in mlibc: `posix_fallocate` and `fallocate` on `SYS_FALLOCATE`, with `FALLOC_FL_KEEP_SIZE`.
 
 31. ~~**Memory commit accounting.**~~ *Done.* Decision: strict, like the Windows commit charge and Linux `vm.overcommit_memory=2`. A call that
     would take the total over the limit fails with `ENOMEM` at the call, so that no process finds out about it on a page fault. It goes
@@ -643,6 +654,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - `fcntl` with `F_GETLK`, `F_SETLK`, `F_SETLKW` and the `F_OFD_*` commands (our numbers, 6 to 11), `struct __k_flock`, and `flock` on
   `SYS_FLOCK` with `LOCK_*` from `usr/vex/fcntl.h`.
 - `sigqueue` on `SYS_SIGQUEUE` (`pid, sig, value`; pass `union sigval` as one register).
+- `posix_fallocate` on `SYS_FALLOCATE` (`fd, mode, offset, length`).
 - `mkfifo`, `mknod` and `mknodat` on `SYS_MKNODAT` (`dirfd, path, mode, dev`).
 - `struct iovec` has a `__k_uintptr_t` base and a `__k_size_t` length; the layout on amd64 is the same.
 
