@@ -257,7 +257,14 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
       allocates nothing. An interval timer skips the periods it missed.
     - The state is 24 bytes in `process_t`. A fork does not inherit it. **Differs from the first plan:** an `exec` keeps the timer, as
       POSIX and Linux have it. `process_finish_exit` removes it, and `itimer_set` refuses to arm it after that.
-    - `UNDONE:` `ITIMER_VIRTUAL` and `ITIMER_PROF` need the CPU time of item 28.
+    - `ITIMER_VIRTUAL` (user time, `SIGVTALRM`) and `ITIMER_PROF` (user and system time, `SIGPROF`) are done, with the numbers of Linux (1, 2).
+      They count the CPU time of all threads of the process, in nanoseconds, down to zero. The hart adds the time that it charges to a thread
+      (`usage_enter_kernel`, `usage_exit_kernel`, `usage_switch`) to two counters of its own, and the scheduler tick passes them to the
+      timers of the thread's process (`itimer_count_cpu`), so the sum over harts is exact and the signal comes a tick late at most. Reading or
+      setting a timer settles the caller's own run first. A period that passed whole meanwhile is skipped, as for `ITIMER_REAL`.
+    - The state of the two CPU timers is 32 bytes, and `process_t` had 8 left of its 512. So `itimer_t` keeps a pointer to a set that the
+      first `setitimer` of a CPU timer makes (`ENOMEM` if it cannot), a fork does not inherit it, an exec keeps it, and the last reference
+      to the process frees it. `process_t` is exactly 512 bytes now: the next field breaks the build, as intended.
 20. ~~**`SYSINFO`.**~~ *Done* (`0x126`, `usr/vex/sysinfo.h`; `total_pages` is `pslab` only). One structure: online CPUs, total and free pages, uptime. Take the data from `hart` and `pframe`. Then `Sysconf` can use it.
 21. **Random numbers.** Decision: a Linux/FreeBSD-style split into noise, a pool, and generators.
     - **Noise sources** (a registry, one entry per source, with a name and a trust flag) only *contribute* to an entropy pool. They are not
