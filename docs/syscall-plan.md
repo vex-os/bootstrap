@@ -412,8 +412,17 @@ The order inside this tier follows what is wanted first, not only cost.
     - Files without the operation are always ready. An invalid fd gives `POLLNVAL`. A closed pipe writer gives `POLLHUP`.
     - The signal mask swap is the same code as in item 15.
     - Cheaper but weaker option: triggers with `linger_pending`. A pending wakeup can then go to a thread that waits for something else.
-27. **`FLOCK` and `fcntl` locks.** A lock list on the vnode. `F_SETLKW` waits on an event. No deadlock detection. Until then mlibc returns
-    `ENOSYS`.
+27. ~~**`FLOCK` and `fcntl` locks.**~~ *Done* (`fs/file_lock.c`, `ktest/test.flock.c`). A lock list on the vnode. `F_SETLKW` waits on an event.
+    - One kind of range lock for all three interfaces. The owner is the process for POSIX locks (`F_GETLK`, `F_SETLK`, `F_SETLKW` = 6 to 8)
+      and the open file for OFD locks (`F_OFD_GETLK`, `F_OFD_SETLK`, `F_OFD_SETLKW` = 9 to 11) and `SYS_FLOCK` (`0xD5`). `flock` is a lock of
+      the open file over `[0, end)`, so it conflicts with `fcntl` locks, as in FreeBSD and not as in Linux.
+    - POSIX locks go when the process closes any descriptor of the file, as POSIX requires. OFD and `flock` locks go with the last close of
+      the open file. `F_GETLK` reports pid -1 for a lock of an open file, and the `F_OFD_*` calls take `l_pid` zero.
+    - `flock` drops the old lock before it changes its type, as Linux and BSD do, so that two owners that upgrade at once do not wait on
+      each other forever. `fcntl` changes the type in one step.
+    - `EDEADLK` for cycles of processes only, up to a chain of 10, as in Linux. An open file can be shared between processes, so a cycle of
+      open files is not always a deadlock.
+    - Advisory only, on any kind of file.
 28. ~~**CPU time:**~~ *Done* (`GETRUSAGE` is `0x129`; `proc/cputime.c`, `time/cycles.c`, `ktest/test.cputime.c`). `CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID`, `getrusage`, `times`, and the `rusage` result of `waitpid`. A
     nanosecond counter in `thread_t`, updated at each context switch. Sum it per process and for waited children.
     - **Counter.** The time comes from a cycle counter of the hart, not from a clock source. Counters of two harts can differ, so a
@@ -546,7 +555,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 ## Next steps
 
-1. `GETRANDOM` (21), `FLOCK` (27) and the rest.
+1. `GETRANDOM` (21) and the rest.
 
 ## Decisions made while implementing
 
@@ -601,6 +610,8 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - `SYS_WAITPID` takes a fourth argument and `SYS_WAITID` a fifth: a `struct __k_rusage` pointer or zero. `wait4` and `wait3` go on
   top of it, and every other wait passes zero.
 - `getrusage` on `SYS_GETRUSAGE`, `times` on `getrusage` and `CLOCK_MONOTONIC`, and `clock_gettime` with the CPU time clocks.
+- `fcntl` with `F_GETLK`, `F_SETLK`, `F_SETLKW` and the `F_OFD_*` commands (our numbers, 6 to 11), `struct __k_flock`, and `flock` on
+  `SYS_FLOCK` with `LOCK_*` from `usr/vex/fcntl.h`.
 - `struct iovec` has a `__k_uintptr_t` base and a `__k_size_t` length; the layout on amd64 is the same.
 
 ## Dependencies
