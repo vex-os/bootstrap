@@ -61,7 +61,7 @@ path block, so it cannot take the new calls.
 | Signal | `0x60`-`0x7F` | KILL, TGKILL, SIGACTION, SIGPROCMASK, SIGPENDING, SIGRETURN, SIGALTSTACK | SIGSUSPEND, SIGTIMEDWAIT, SIGQUEUE, SETITIMER |
 | Credentials | `0x80`-`0x9F` | GETRESUID ... CAPSET | none |
 | Memory | `0xA0`-`0xBF` | MMAP, MUNMAP, MPROTECT, MSYNC | MADVISE (done, `0xA4`), MLOCK (done, `0xA5`), MUNLOCK (done, `0xA6`), MLOCKALL (done, `0xA7`), MUNLOCKALL (done, `0xA8`), MREMAP |
-| Descriptor | `0xC0`-`0xDF` | OPENAT ... FCNTL, PREAD (done), PWRITE (done) | PIPE2, PPOLL, READV (done, `0xCF`), WRITEV (done, `0xD0`), PREADV (done, `0xD1`), PWRITEV (done, `0xD2`), FLOCK, FALLOCATE |
+| Descriptor | `0xC0`-`0xDF` | OPENAT ... FCNTL, PREAD (done), PWRITE (done) | PIPE (done, `0xD3`), PPOLL, READV (done, `0xCF`), WRITEV (done, `0xD0`), PREADV (done, `0xD1`), PWRITEV (done, `0xD2`), FLOCK, FALLOCATE |
 | Path | `0xE0`-`0xFF` | FSTATAT ... FACCESSAT | MKNODAT, CHROOT |
 | xattr, vfs | `0x100`-`0x11F` | GETXATTRAT ... REMOVEXATTRAT, MOUNT, UMOUNT, SYNC, SYNCFS, STATVFS | none |
 | System | `0x120`-`0x13F` | UNAME, GETTIME, SETTIME, SETHOSTNAME (done), NANOSLEEP (done, `0x124`; replaces SLEEP) | GETTIMERES (done, `0x125`), GETRLIMIT, SETRLIMIT, GETRANDOM, SYSINFO |
@@ -154,7 +154,7 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
 11. ~~**`READV`, `WRITEV` (M).**~~ *Done*, with `PREADV` and `PWRITEV` (no flags argument). Arguments: `fd, iov, count` and, for the
     positioned calls, `offset` last.
     - The point of the call is that the data of a `writev` of up to a page reaches the file as one `vnode_write`, and so as one write
-      of a pipe, which `pipe2` will make atomic up to `PIPE_BUF` (a pipe has to keep `PIPE_BUF <= FILE_IO_CHUNK`). There is no lock for
+      of a pipe, which `pipe` makes atomic up to `PIPE_BUF` (a pipe has to keep `PIPE_BUF <= FILE_IO_CHUNK`). There is no lock for
       the whole call: the file layer has none, and a plain `write` of more than a page is not atomic either.
     - `struct __k_iovec` is in `usr/vex/uio.h`, `IOV_MAX` is 1024. A longer array, or lengths that add up to more than `INT64_MAX`, give
       `EINVAL` before any data moves. Empty buffers are skipped.
@@ -226,18 +226,24 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
     - In `signal_deliver`, pass the saved mask instead of the current one as `old_mask`, then clear the flag. `sigreturn` then restores the
       original mask on its own.
     - A wakeup always means a deliverable signal (see the `queue_signal` fact), so no loop is needed.
-16. **`PIPE2`, with a pipe file system.**
-    - New `pipefs`, modelled on devfs: a `vfs_t`, `node->fs` set, `vcache_insert_pinned`.
-    - New `VNODE_FIFO` type. `stat` reports `S_IFIFO`. `getdents` reports `DT_FIFO`.
-    - Pipe object: 64 KiB ring of pages, one lock, reader and writer counts, and two events ("has data", "has room"). `open` and `close`
-      keep the counts.
-    - `read`: empty and no writer returns 0. Empty and `O_NONBLOCK` returns `EAGAIN`. Otherwise wait with `event_await_unlock`, as
-      `read_input` in the tty does.
-    - `write`: no reader sends `SIGPIPE` and returns `EPIPE`. A write up to `PIPE_BUF` (4096) is atomic: wait until all of it fits.
-    - `SYS_PIPE2(int fds[2], flags)` accepts `O_CLOEXEC | O_NONBLOCK`. Make two `file_t` on one vnode. Undo the first on an error.
-      Copy the array out last.
-    - Add `VNODE_FIFO` to the early-exit condition in `read_file`.
-    - Implement `FIONREAD`. The constant exists. Add the `Pipe` sysdep.
+16. ~~**`PIPE`, with a pipe service.**~~ *Done.* `SYS_PIPE(int fds[2], flags)` is `0xD3`. It takes `O_CLOEXEC | O_NONBLOCK` and has no
+    older form without flags, so it has no `2` in its name.
+    - The code is the service `ipc/pipe.c` with the header `vex/pipe.h` (`pipe_create`). The header names no filesystem. `ipc` is a new
+      top directory with the log subsystem `KP_IPC`: local sockets will go there too.
+    - The pipes live in an internal filesystem, `pipefs`, which only the service knows. A driver with the new `internal` flag serves
+      `vfs_create` only, and `vfs_mount` gives `ENODEV` for it, so `mount(2)` cannot make a second one. The filesystem is there for
+      `node->fs`, `st_dev` and the `ino` of the node. A pipe node is not in the `vcache`: it lives as long as its two files.
+    - New `VNODE_FIFO` type. `stat` reports `S_IFIFO`, `getdents` reports `DT_FIFO`. `seek` gives `ESPIPE`, so `pread` and `pwrite` too.
+    - The pipe object is a queue of up to 16 pages, not a ring: a page goes back as soon as it is read empty, so an empty pipe holds none.
+      Each page counts against the commit limit (item 31) when the write takes it, and a write that cannot get one returns what it wrote,
+      or `ENOMEM`. One spinlock, the counts of readers and writers (kept by `open` and `close`), and two events.
+    - `read`: empty and no writer returns 0. Empty and `O_NONBLOCK` returns `EAGAIN`. A read hands out one page at most, and
+      `read_chunks` stops after it (`hands_out_at_once` has `VNODE_FIFO`).
+    - `write`: no reader sends `SIGPIPE` to the writing thread and returns `EPIPE`. A piece of up to `PIPE_ATOMIC_SIZE` (one page, which
+      is `FILE_IO_CHUNK`) goes in all or nothing, and a longer write goes in as there is room.
+    - `FIONREAD` works on both ends, like in Linux.
+    - Tests: `ktest/test.pipe.c`.
+    - Still to do: the `Pipe` sysdep in mlibc, and the waiter list of item 26.
 17. **`SIGTIMEDWAIT`** (for `sigwait` and `sigtimedwait`). Take a signal from the pending set without a handler. Reuse the dequeue code of
     `signal_deliver`. The timeout works as in `sigsuspend`.
 18. ~~**`kill(-1)`.**~~ *Done.* Every process but init and the sender; 0 if one was signalled, `EPERM` if none may be, `ESRCH` if there are none.
@@ -314,7 +320,7 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
     - Enforce `MEMLOCK` and add `CAP_IPC_LOCK` for item 12 here.
     - Done: the limits are one refcounted object in `process_t` (`proc/rlimit.c`); a change copies it under `process->lock`. The
       numbers are the Linux ones, and the hard limit goes up only with the new `CAP_SYS_RESOURCE` (24). `RLIMIT_NOFILE` caps the
-      descriptor table (`EMFILE`; `dup2` past it gives `EBADF`, `F_DUPFD` past it `EINVAL`; a limit under the descriptors in use only
+      descriptor table (`EMFILE`; `dup` past it gives `EBADF`, `F_DUPFD` past it `EINVAL`; a limit under the descriptors in use only
       turns away new ones), and its hard limit may not pass `CONFIG_MAX_FDS`. `RLIMIT_STACK` sizes the stack that exec maps: 64 KiB
       at least, 1 GiB at most, and `RLIM_INFINITY` gives the default. The other limits are stored only.
     - Done: `RLIMIT_NICE` lets a process without `CAP_SYS_NICE` lower its nice value down to `20 - rlim_cur`.
@@ -385,7 +391,12 @@ The order inside this tier follows what is wanted first, not only cost.
     - `UNDONE:` `ptrace` stops, and `CLD_TRAPPED`, do not exist.
     - Still to do in mlibc: the `WUNTRACED`/`WCONTINUED` options and the status macros, `SA_NOCLDSTOP`, and a shell test.
     - Check `SIGTSTP`, which the tty already sends on `^Z`.
-26. **`PPOLL`** (and `poll`, `select`, `pselect` on top of it in mlibc).
+26. ~~**`PPOLL`**~~ *Done* in the kernel (`0xD4`, `usr/vex/poll.h`). `poll`, `select` and `pselect` go on top of it in mlibc.
+    - Arguments: `fds, count, timeout, mask`. The timeout is relative, `nullptr` waits for as long as it takes, and the call does not
+      write back what is left. The mask is a pointer to a `sigset_t`, with no size argument, as in `SIGSUSPEND`.
+    - A signal gives `EINTR`, never a restart. `count` above `RLIMIT_NOFILE` gives `EINVAL`.
+    - The design below changed: see "Decisions made while implementing".
+    - Tests: `ktest/test.poll.c`.
     - A loop of "check all, then wait on an event array" loses wakeups: `event_await_unlock` holds one lock, the files have different locks,
       and tty triggers keep no pending wakeup.
     - Fix: each poll puts its own `event_t` on the stack and registers it in a waiter list on every file before the check. A new vnode
@@ -498,9 +509,8 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 ## Next steps
 
-1. `PIPE2` (item 16) and `PPOLL` (item 26): `vfs_create` and `event_sleep` exist now.
-2. `SIGTIMEDWAIT` (17) and `SETITIMER` (19).
-3. `FLOCK` (27), CPU time (28) and the rest.
+1. `SIGTIMEDWAIT` (17) and `SETITIMER` (19).
+2. `FLOCK` (27), CPU time (28) and the rest.
 
 ## Decisions made while implementing
 
@@ -529,12 +539,27 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - Access to a file is checked in `open` only. A descriptor is a right that was granted, so `read` does not look at credentials again. A
   check on every access would belong to a security module, as `security_file_permission` in Linux.
 
+- `DUP`, `DUP2` and `DUP3` are one call, `SYS_DUP(old, new, flags)` (`0xC6`), with the rules of `dup3`: the same number twice is `EINVAL`.
+  The C library makes `dup` with `fcntl(F_DUPFD, 0)`, and `dup2` with `SYS_DUP` and no flags; for the same number it checks the
+  descriptor with `fcntl(F_GETFD)` and returns it.
+- A subsystem of the kernel that is a service with files of its own gets a header under its name and keeps its filesystem to itself, as
+  `shmem` does with `tmpfs`: no filesystem has a public header. The pipe service does so with `pipefs`.
+
+- `PPOLL` has no waiter lists. An event counts its triggers (a generation). A file's `poll` operation names its events with
+  `poll_table_add`, which reads the generation before the file reads its state. The wait (`event_watch_*`) registers on one event at a
+  time and returns at once if a generation moved. It never holds the locks of two events, so two polls that list the same files in
+  another order cannot deadlock, as they could with `event_await_unlock` on several events.
+- The `pollfd` entries of `PPOLL` live in chunks: 8 on the stack, then one page from `pslab` for each further chunk. No `kmalloc`, except
+  that `thread->events` grows once to the largest number of events that the thread has waited on.
+
 ### Follow-up for mlibc (a session of its own)
 
 - The new `MAP_*` flags in `abi-bits/vm-flags.h`.
 - `Sysdeps<Seek>` already stores the result of the call, which is the new offset now.
 - The `Readv` and `Writev` sysdeps, and `Pread` and `Pwrite`, and `Sleep` as a relative `CLOCK_MONOTONIC` call of `SYS_NANOSLEEP`.
 - The `SetHostname` sysdep.
+- The `Pipe` sysdep (`SYS_PIPE` takes the flags), and `Dup` and `Dup2` as the item above says.
+- `poll`, `ppoll`, `select` and `pselect` on `SYS_PPOLL`, and `abi-bits/poll.h` with the values of `usr/vex/poll.h` (the Linux ones).
 - Everything in Tier 1: signals, threads, `Sysconf`.
 - `shm_open` and `sem_open` use `/run/shm/` (`options/posix/generic/sys-mman.cpp`), and `/run` is a `tmpfs` mount.
 - `struct iovec` has a `__k_uintptr_t` base and a `__k_size_t` length; the layout on amd64 is the same.
@@ -555,7 +580,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 The tiers are sorted by cost. These items are done earlier than their tier says:
 
-- Item 25 (job control) goes right after Tier 2, before items 15 (`sigsuspend`) and 16 (`pipe2`). It does not depend on them. It does
+- Item 25 (job control) goes right after Tier 2, before items 15 (`sigsuspend`) and 16 (`pipe`). It does not depend on them. It does
   depend on the signal sysdeps (item 3) and on the renumbering (item 7), because a shell test needs both.
 
 - Item 31 goes right after item 13 and before item 23 (`tmpfs`), not at the end of Tier 4.
@@ -581,7 +606,7 @@ The tiers are sorted by cost. These items are done earlier than their tier says:
 - [x] Process size budget: 512, small fields inline in sub-structures. Decided.
 - [x] Item 22: shared refcounted object (b). Decided.
 - [x] Item 23: how `tmpfs` stores file pages: a memory mode in `fcache` (not a separate page store inside `tmpfs`). Decided (delegated).
-- [x] Item 25: job control moves before `pipe2` and `sigsuspend`. See "Priority overrides". Decided.
+- [x] Item 25: job control moves before `pipe` and `sigsuspend`. See "Priority overrides". Decided.
 - [x] Item 8: `pwrite` with `O_APPEND` follows POSIX and writes at the given offset. Decided.
 - [x] Item 8: a flag in `file_t` for streams, set at open, and a char device with no `seek` is a stream. Decided.
 - [x] Item 9: `CLOCK_NANOSLEEP` goes to the system block, and an absolute `CLOCK_REALTIME` wait follows `settime`. Decided.
