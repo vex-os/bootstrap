@@ -419,7 +419,7 @@ The order inside this tier follows what is wanted first, not only cost.
 29. **`MKNODAT` and named FIFOs.** First on `tmpfs` (a vnode of type FIFO or device, in memory). Opening a FIFO inode resolves to a pipe object
     that lives with the vnode. An open for read blocks until a writer exists. Then ext2: it must store and read the device and FIFO inode
     types and `rdev`, and `create` must accept the new types.
-30. **The rest.** `MREMAP`, `FALLOCATE` (ext2 and `tmpfs`, other file systems return `ENOSYS`), `CHROOT` (a root pointer in the process),
+30. **The rest.** `MREMAP`, `FALLOCATE` (ext2 and `tmpfs`, other file systems return `ENOSYS`), ~~`CHROOT`~~ (*done*, `0xEF`, `CAP_SYS_CHROOT` = 18; `process->root` is inherited by a fork and kept by an exec; the path code gets it through `path_set_root_source`, and `..` and absolute symlinks stop at it; the working directory is not moved, so a process that keeps one outside the new root can leave through it, as in Linux; `ktest/test.chroot.c`),
     ~~`WAITID`~~ (*done*, `0x035`: `P_ALL`, `P_PID`, `P_PGID`, `WEXITED`, `WSTOPPED`, `WCONTINUED`, `WNOHANG`, `WNOWAIT`; shares `wait_child` with `waitpid`; `ktest/test.waitid.c`), `SIGQUEUE` (needs a queue of real-time signals, not a bit mask).
 
 31. ~~**Memory commit accounting.**~~ *Done.* Decision: strict, like the Windows commit charge and Linux `vm.overcommit_memory=2`. A call that
