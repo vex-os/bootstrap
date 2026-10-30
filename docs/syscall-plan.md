@@ -244,12 +244,20 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
     - `FIONREAD` works on both ends, like in Linux.
     - Tests: `ktest/test.pipe.c`.
     - Still to do: the `Pipe` sysdep in mlibc, and the waiter list of item 26.
-17. **`SIGTIMEDWAIT`** (for `sigwait` and `sigtimedwait`). Take a signal from the pending set without a handler. Reuse the dequeue code of
-    `signal_deliver`. The timeout works as in `sigsuspend`.
+17. ~~**`SIGTIMEDWAIT`**~~ *Done* (`0x068`, `signal_take` in `proc/signal.c`; `ktest/test.sigtimedwait.c`).
+    - Arguments: the set by pointer, the `siginfo` by pointer or null, the `timespec` timeout by pointer. A null timeout waits as long as it
+      takes, and a zero one only looks. It returns the signal number, `EAGAIN` on timeout and `EINTR` for a handler of another signal.
+    - The set is unblocked for the time of the wait (`signal_replace_mask`), so the arrival of a signal wakes the thread. A signal of the
+      set is taken first, even when it has a handler. Nothing returns `-ERESTART`.
 18. ~~**`kill(-1)`.**~~ *Done.* Every process but init and the sender; 0 if one was signalled, `EPERM` if none may be, `ESRCH` if there are none.
-19. **`SETITIMER`** (and `alarm`). One `ITIMER_REAL` timer per process on top of `clockevt`. At expiry send `SIGALRM`, and restart if the
-    interval is not zero. Remove the timer on `exec` and `exit`. The state is about 48 bytes, owned by one process, so it goes inline in
-    `process_t` once the budget is 512 bytes (see "Process size budget").
+19. ~~**`SETITIMER`**~~ *Done* (`0x06A`; `0x069` stays for `SIGQUEUE`). `proc/itimer.c`, `ktest/test.itimer.c`.
+    - `SETITIMER(which, itimerspec*, itimerspec*)` has one timer, `ITIMER_REAL`, in nanoseconds. A null new value only reads, so
+      `getitimer` is the same call. `alarm` is `setitimer` in mlibc.
+    - The timers sit in a list by deadline, and the scheduler tick (`itimer_run_expired`) sends `SIGALRM` with `signal_raise`, which
+      allocates nothing. An interval timer skips the periods it missed.
+    - The state is 24 bytes in `process_t`. A fork does not inherit it. **Differs from the first plan:** an `exec` keeps the timer, as
+      POSIX and Linux have it. `process_finish_exit` removes it, and `itimer_set` refuses to arm it after that.
+    - `UNDONE:` `ITIMER_VIRTUAL` and `ITIMER_PROF` need the CPU time of item 28.
 20. ~~**`SYSINFO`.**~~ *Done* (`0x126`, `usr/vex/sysinfo.h`; `total_pages` is `pslab` only). One structure: online CPUs, total and free pages, uptime. Take the data from `hart` and `pframe`. Then `Sysconf` can use it.
 21. **Random numbers.** Decision: a Linux/FreeBSD-style split into noise, a pool, and generators.
     - **Noise sources** (a registry, one entry per source, with a name and a trust flag) only *contribute* to an entropy pool. They are not
@@ -412,7 +420,7 @@ The order inside this tier follows what is wanted first, not only cost.
     that lives with the vnode. An open for read blocks until a writer exists. Then ext2: it must store and read the device and FIFO inode
     types and `rdev`, and `create` must accept the new types.
 30. **The rest.** `MREMAP`, `FALLOCATE` (ext2 and `tmpfs`, other file systems return `ENOSYS`), `CHROOT` (a root pointer in the process),
-    `WAITID` (as `waitpid`, with `siginfo`), `SIGQUEUE` (needs a queue of real-time signals, not a bit mask).
+    ~~`WAITID`~~ (*done*, `0x035`: `P_ALL`, `P_PID`, `P_PGID`, `WEXITED`, `WSTOPPED`, `WCONTINUED`, `WNOHANG`, `WNOWAIT`; shares `wait_child` with `waitpid`; `ktest/test.waitid.c`), `SIGQUEUE` (needs a queue of real-time signals, not a bit mask).
 
 31. ~~**Memory commit accounting.**~~ *Done.* Decision: strict, like the Windows commit charge and Linux `vm.overcommit_memory=2`. A call that
     would take the total over the limit fails with `ENOMEM` at the call, so that no process finds out about it on a page fault. It goes
@@ -509,8 +517,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 ## Next steps
 
-1. `SIGTIMEDWAIT` (17) and `SETITIMER` (19).
-2. `FLOCK` (27), CPU time (28) and the rest.
+1. `GETRANDOM` (21), `FLOCK` (27), CPU time (28) and the rest.
 
 ## Decisions made while implementing
 
