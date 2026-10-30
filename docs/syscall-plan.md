@@ -56,7 +56,7 @@ path block, so it cannot take the new calls.
 
 | Block | Range | Now | New |
 | --- | --- | --- | --- |
-| Process | `0x20`-`0x3F` | EXIT, FORK, EXEC, WAITPID, GETPID, GETPPID, SETSID, SETPGID, GETPGID, GETSID (SLEEP is gone, slot `0x2A` stays empty) | WAITID, GETPRIORITY (done, `0x2B`), SETPRIORITY (done), GETSCHEDULER (done), SETSCHEDULER (done), GETSCHEDPARAM (done), SETSCHEDPARAM (done), GETSCHEDRANGE (done), GETSCHEDINTERVAL (done), GETAFFINITY (done), SETAFFINITY (done, `0x34`) |
+| Process | `0x20`-`0x3F` | EXIT, FORK, EXEC, WAITPID, GETPID, GETPPID, SETSID, SETPGID, GETPGID, GETSID (SLEEP is gone, slot `0x2A` stays empty) | WAITID, GETPRIORITY (done, `0x2B`), SETPRIORITY (done), GETSCHEDULER (done), SETSCHEDULER (done), GETSCHEDPARAM (done), SETSCHEDPARAM (done), GETSCHEDRANGE (done), GETSCHEDINTERVAL (done), GETAFFINITY (done), SETAFFINITY (done, `0x34`), GETCPU (done, `0x36`) |
 | Thread, futex | `0x40`-`0x5F` | THREAD_CREATE, THREAD_EXIT, GETTID, TCB_SET, YIELD, FUTEX_WAIT, FUTEX_WAKE | none |
 | Signal | `0x60`-`0x7F` | KILL, TGKILL, SIGACTION, SIGPROCMASK, SIGPENDING, SIGRETURN, SIGALTSTACK | SIGSUSPEND, SIGTIMEDWAIT, SIGQUEUE (done, `0x069`), SETITIMER |
 | Credentials | `0x80`-`0x9F` | GETRESUID ... CAPSET | none |
@@ -195,11 +195,18 @@ of the table. The comment in `usr/vex/syscall.h` says 32 (done).
     - The only policy is `SCHED_OTHER` with priority 0. Anything else is `EINVAL`. `GETSCHEDRANGE(policy, range*)` writes `{0, 0}`.
       `GETSCHEDINTERVAL` gives the timeslice that the process has by its nice value. The `pid` of these calls is a process, and a
       negative one is `EINVAL`.
-    - `GETAFFINITY(pid, size, mask*)` writes the online harts as whole 64 bit words and returns the size of the mask, as Linux does.
-      `SETAFFINITY` takes a mask with at least one online hart and does nothing else. `UNDONE:` the scheduler keeps the thread off the
-      other harts. Today `bound_hart` is one hart for a kernel thread. A mask means the choice in `choose_hart`, the stealing in `rq_steal`
-      and the wakeup in `kick_hart` look at it.
-    - Still to do: the sysdeps in mlibc, and the conversion of `getpriority`.
+    - `GETAFFINITY(pid, tid, size, mask*)` and `SETAFFINITY(pid, tid, size, mask*)` take a process and a thread in it, as `tgkill` does. A
+      `tid` of 0 stands for every thread of the process for a set (each gets a mask of its own), and for the calling thread or the main
+      thread for a get. The call returns the size of the mask, as Linux does, in whole 64 bit words. A mask needs one online hart.
+    - The mask belongs to a thread, as in Linux, so that `pthread_setaffinity_np` can pin one worker. It is a bitmap in `thread_t`,
+      `nullptr` for a thread that never set one (every hart), made by the first set and changed in place afterwards, so that the
+      scheduler reads it without a lock. A new thread and the child of a fork copy the mask of their creator, and an exec keeps it.
+    - `thread_may_run_on` joins `bound_hart` in `rq_take_nolock`, `choose_hart` and `kick_hart`. A thread that sits on a hart the mask
+      leaves out gets an IPI and goes at that tick. It is woken onto a hart that may run it, not put in the queue of the hart that
+      cannot: nothing there would take it out, and the idle thread would spin on it. `UNDONE:` if every hart it may use is busy, it waits
+      for one to free up, as the `TODO` about balancing queues says for every thread.
+    - `GETCPU` (`0x36`) returns the index of the hart of the caller. Tests: `ktest/test.affinity.c`.
+    - Still to do: the sysdeps in mlibc (with the `tid` argument of the affinity calls and `sched_getcpu` on `GETCPU`), and the conversion of `getpriority`.
 
 14. ~~**`GETTIMERES` and more clock ids (S).**~~ *Done.* `GETTIMERES` is `0x125`. The clock ids have the Linux values. `canonical_clock` in
     `sys_time.c` maps the aliases, and `gettime`, `gettimeres` and `nanosleep` use it. `settime` takes `CLOCK_REALTIME` only. The resolution is
