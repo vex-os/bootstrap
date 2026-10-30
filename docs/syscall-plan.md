@@ -414,7 +414,7 @@ The order inside this tier follows what is wanted first, not only cost.
     - Cheaper but weaker option: triggers with `linger_pending`. A pending wakeup can then go to a thread that waits for something else.
 27. **`FLOCK` and `fcntl` locks.** A lock list on the vnode. `F_SETLKW` waits on an event. No deadlock detection. Until then mlibc returns
     `ENOSYS`.
-28. **CPU time:** `CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID`, `getrusage`, `times`, and the `rusage` result of `waitpid`. A
+28. ~~**CPU time:**~~ *Done* (`GETRUSAGE` is `0x129`; `proc/cputime.c`, `time/cycles.c`, `ktest/test.cputime.c`). `CLOCK_PROCESS_CPUTIME_ID`, `CLOCK_THREAD_CPUTIME_ID`, `getrusage`, `times`, and the `rusage` result of `waitpid`. A
     nanosecond counter in `thread_t`, updated at each context switch. Sum it per process and for waited children.
     - **Counter.** The time comes from a cycle counter of the hart, not from a clock source. Counters of two harts can differ, so a
       value is only compared with a value of the same hart. A thread starts and ends each run on one hart, so this is sufficient. The
@@ -546,7 +546,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 
 ## Next steps
 
-1. `GETRANDOM` (21), `FLOCK` (27), CPU time (28) and the rest.
+1. `GETRANDOM` (21), `FLOCK` (27) and the rest.
 
 ## Decisions made while implementing
 
@@ -598,6 +598,9 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - `poll`, `ppoll`, `select` and `pselect` on `SYS_PPOLL`, and `abi-bits/poll.h` with the values of `usr/vex/poll.h` (the Linux ones).
 - Everything in Tier 1: signals, threads, `Sysconf`.
 - `shm_open` and `sem_open` use `/run/shm/` (`options/posix/generic/sys-mman.cpp`), and `/run` is a `tmpfs` mount.
+- `SYS_WAITPID` takes a fourth argument and `SYS_WAITID` a fifth: a `struct __k_rusage` pointer or zero. `wait4` and `wait3` go on
+  top of it, and every other wait passes zero.
+- `getrusage` on `SYS_GETRUSAGE`, `times` on `getrusage` and `CLOCK_MONOTONIC`, and `clock_gettime` with the CPU time clocks.
 - `struct iovec` has a `__k_uintptr_t` base and a `__k_size_t` length; the layout on amd64 is the same.
 
 ## Dependencies
