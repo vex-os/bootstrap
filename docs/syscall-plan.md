@@ -58,7 +58,7 @@ path block, so it cannot take the new calls.
 | --- | --- | --- | --- |
 | Process | `0x20`-`0x3F` | EXIT, FORK, EXEC, WAITPID, GETPID, GETPPID, SETSID, SETPGID, GETPGID, GETSID (SLEEP is gone, slot `0x2A` stays empty) | WAITID, GETPRIORITY (done, `0x2B`), SETPRIORITY (done), GETSCHEDULER (done), SETSCHEDULER (done), GETSCHEDPARAM (done), SETSCHEDPARAM (done), GETSCHEDRANGE (done), GETSCHEDINTERVAL (done), GETAFFINITY (done), SETAFFINITY (done, `0x34`) |
 | Thread, futex | `0x40`-`0x5F` | THREAD_CREATE, THREAD_EXIT, GETTID, TCB_SET, YIELD, FUTEX_WAIT, FUTEX_WAKE | none |
-| Signal | `0x60`-`0x7F` | KILL, TGKILL, SIGACTION, SIGPROCMASK, SIGPENDING, SIGRETURN, SIGALTSTACK | SIGSUSPEND, SIGTIMEDWAIT, SIGQUEUE, SETITIMER |
+| Signal | `0x60`-`0x7F` | KILL, TGKILL, SIGACTION, SIGPROCMASK, SIGPENDING, SIGRETURN, SIGALTSTACK | SIGSUSPEND, SIGTIMEDWAIT, SIGQUEUE (done, `0x069`), SETITIMER |
 | Credentials | `0x80`-`0x9F` | GETRESUID ... CAPSET | none |
 | Memory | `0xA0`-`0xBF` | MMAP, MUNMAP, MPROTECT, MSYNC | MADVISE (done, `0xA4`), MLOCK (done, `0xA5`), MUNLOCK (done, `0xA6`), MLOCKALL (done, `0xA7`), MUNLOCKALL (done, `0xA8`), MREMAP |
 | Descriptor | `0xC0`-`0xDF` | OPENAT ... FCNTL, PREAD (done), PWRITE (done) | PIPE (done, `0xD3`), PPOLL, READV (done, `0xCF`), WRITEV (done, `0xD0`), PREADV (done, `0xD1`), PWRITEV (done, `0xD2`), FLOCK, FALLOCATE |
@@ -468,7 +468,20 @@ The order inside this tier follows what is wanted first, not only cost.
     - On the way, `mount` and `umount` resolve the mount point as any other path: from the working directory and the root of the
       caller, with its permissions. `umount` finds the mount by its filesystem, not by the text of the path.
 30. **The rest.** `MREMAP`, `FALLOCATE` (ext2 and `tmpfs`, other file systems return `ENOSYS`), ~~`CHROOT`~~ (*done*, `0xEF`, `CAP_SYS_CHROOT` = 18; `process->root` is inherited by a fork and kept by an exec; the path code gets it through `path_set_root_source`, and `..` and absolute symlinks stop at it; the working directory is not moved, so a process that keeps one outside the new root can leave through it, as in Linux; `ktest/test.chroot.c`),
-    ~~`WAITID`~~ (*done*, `0x035`: `P_ALL`, `P_PID`, `P_PGID`, `WEXITED`, `WSTOPPED`, `WCONTINUED`, `WNOHANG`, `WNOWAIT`; shares `wait_child` with `waitpid`; `ktest/test.waitid.c`), `SIGQUEUE` (needs a queue of real-time signals, not a bit mask).
+    ~~`WAITID`~~ (*done*, `0x035`: `P_ALL`, `P_PID`, `P_PGID`, `WEXITED`, `WSTOPPED`, `WCONTINUED`, `WNOHANG`, `WNOWAIT`; shares `wait_child` with `waitpid`; `ktest/test.waitid.c`), ~~`SIGQUEUE`~~ (*done*, `0x069`, see below).
+
+    - `SIGQUEUE` details. `SIGQUEUE(pid, sig, value)`: the value is a whole register that goes to `si_value`, `sival_int` being its low half.
+      The permissions are those of `kill`; `sig` 0 only checks them; `pid` must be positive. The queue was there already (`pending_signal_t`),
+      so only two rules changed in `proc/signal.c`. A signal from `SIGRTMIN` up gets one entry per send, by its number and not by who sends
+      it, so `kill` queues it too. The pending bit stays set until the last entry of the number is taken (`dequeue_locked`).
+    - Limit: `RLIMIT_SIGPENDING`, counted for the receiving process over its own queue and the queues of its threads, as in FreeBSD
+      (`kern.sigqueue.max_pending_per_proc`). The default is 128, with a hard limit of 1024. `sigqueue` returns `EAGAIN` when the limit is
+      reached, when no entry can be allocated, and when a standard signal of the number is pending already. `kill` never fails for this: with
+      no room, or no memory, the signal merges or goes in without a siginfo, as before.
+    - POSIX counts `SIGQUEUE_MAX` for the sender, and Linux counts per real user of the receiver. FreeBSD counts per receiving process
+      only (in the part of `kern_sig.c` that was read), and so does the kernel here: it is a choice and not a debt. Tests: `ktest/test.sigqueue.c`. The permission check (`EPERM`) is not
+      tested, because the test runs as root.
+    - Still to do in mlibc: the `Sigqueue` sysdep (`posix_signal.cpp` calls `Sigqueue(pid, sig, val)`) and `sysconf(_SC_SIGQUEUE_MAX)`.
 
 31. ~~**Memory commit accounting.**~~ *Done.* Decision: strict, like the Windows commit charge and Linux `vm.overcommit_memory=2`. A call that
     would take the total over the limit fails with `ENOMEM` at the call, so that no process finds out about it on a page fault. It goes
@@ -622,6 +635,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - `getrusage` on `SYS_GETRUSAGE`, `times` on `getrusage` and `CLOCK_MONOTONIC`, and `clock_gettime` with the CPU time clocks.
 - `fcntl` with `F_GETLK`, `F_SETLK`, `F_SETLKW` and the `F_OFD_*` commands (our numbers, 6 to 11), `struct __k_flock`, and `flock` on
   `SYS_FLOCK` with `LOCK_*` from `usr/vex/fcntl.h`.
+- `sigqueue` on `SYS_SIGQUEUE` (`pid, sig, value`; pass `union sigval` as one register).
 - `mkfifo`, `mknod` and `mknodat` on `SYS_MKNODAT` (`dirfd, path, mode, dev`).
 - `struct iovec` has a `__k_uintptr_t` base and a `__k_size_t` length; the layout on amd64 is the same.
 
