@@ -535,8 +535,7 @@ The order inside this tier follows what is wanted first, not only cost.
       it grows by the size of swap. The page cache is not counted, as it can be reclaimed.
     - `fork` counts the private writable memory of the child too, and returns `ENOMEM` when it does not fit. POSIX allows this. Redis
       (a background save) and Java (`Runtime.exec`) are the known programs that meet it; shared memory is counted once and does not
-      double. `UNDONE:` a call that starts a program without a copy of the address space (`vfork` or a spawn call), as strict systems
-      have it.
+      double. Done later: `SYS_SPAWN`, item 32.
     - `MAP_NORESERVE`: a process that holds a new capability may ask for a mapping that is not counted, and a page that cannot be
       given on a touch sends `SIGBUS`. Any other process passes the flag with no effect and no error, as programs pass it out of habit.
       `UNDONE:` the capability (the next free number after `CAP_DEVICE`) and a small reserve of the limit for processes that hold it.
@@ -562,12 +561,23 @@ The order inside this tier follows what is wanted first, not only cost.
       - `MAP_NORESERVE` works for a process with `CAP_VM_NORESERVE` (number 50). The flag is the `flags` argument of `vms_map*`
         (`VMS_NORESERVE`) and the field `noreserve` of the region. `vm_backing_t` is not the place: it describes only the file. Without
         the capability the flag does nothing. The fault path already sends `SIGBUS` when a page is not available.
-      - `UNDONE:` a small part of the limit for the holders of `CAP_VM_NORESERVE`. `UNDONE:` a call that starts a program without a copy
-        of the address space.
+      - `UNDONE:` a small part of the limit for the holders of `CAP_VM_NORESERVE`. Done: `SYS_SPAWN` (item 32).
       - Shared anonymous memory (item 24) and `tmpfs` (item 23) take pages from the same counter, and the charge belongs to the object
         and not to the region, so that a `fork` does not count shared pages twice. The hidden file of item 24 takes its whole size at
         creation, and a named `tmpfs` file takes one page at a time.
       - Tests: `ktest/test.commit.c`.
+
+32. ~~**`SYS_SPAWN`.**~~ *Done* (`0x037`, `usr/vex/spawn.h`, `proc/sys_process.c`; `ktest/test.spawn.c`).
+    - Spawn starts a process in a new image without a copy of the address space of the caller, so the commit limit cannot fail it the
+      way it can fail `fork`. Errors of the image resolve return from the call, as they cannot with `fork` and `exec`.
+    - One struct argument carries the path, argv, envp, flags (`SETSID`, `SETPGID`, `EMPTY_FDS`) and a list of file actions: open,
+      close and dup2 in an SDL_Event-style tagged union. The actions apply to the child table with the caller credentials, as the file
+      actions of `posix_spawn` are. Each action is copied as it runs and applies right away, so the call holds no array; a failed
+      action fails the call and the child never appears.
+    - `SETSID` and `SETPGID` place the child before its first run, so a shell can start a pipeline without `fork`. `EMPTY_FDS` starts
+      the child with an empty descriptor table.
+    - Still to do in mlibc: `posix_spawn` and `posix_spawnp` on `SYS_SPAWN`, with a `fork` and `exec` fallback on `ENOSYS`.
+    - The `vfork` form does not exist and is not planned: spawn covers the use, and a shared address space buys nothing here.
 
 ### Later, not scheduled
 
@@ -678,6 +688,11 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
     time and showed that `fork` left the XSAVE header of the child as the stack had it, so `XRSTOR` faulted. `fork` now starts
     from the initial state.
 
+- `SYS_SPAWN` (item 32): one struct argument, so new fields do not need register decisions. The file actions are an SDL_Event-style
+  tagged union; the contract is "the first field of every member is `op`". The actions copy in one at a time and apply as they come:
+  a failed action fails the call, and the partial table dies with the child in `process_destroy`. The call allocates nothing but two
+  pslab pages (one for the path and the argument strings, one shared by the image path and the action paths).
+
 ### Follow-up for mlibc (a session of its own)
 
 - The new `MAP_*` flags in `abi-bits/vm-flags.h`.
@@ -697,6 +712,7 @@ interval timer (about 48 bytes), and the limits (8 bytes as a pointer, or 128 to
 - `mremap` (`VmRemap`) on `SYS_MREMAP`, always with `MREMAP_MAYMOVE`.
 - `posix_fallocate` on `SYS_FALLOCATE` (`fd, mode, offset, length`).
 - `mkfifo`, `mknod` and `mknodat` on `SYS_MKNODAT` (`dirfd, path, mode, dev`).
+- `posix_spawn` and `posix_spawnp` on `SYS_SPAWN`, with a `fork` and `exec` fallback when the call answers `ENOSYS`.
 - `getrandom` on `SYS_GETRANDOM` with the flags of `usr/vex/random.h`, and the `GetEntropy` sysdep on top of it.
 - `struct iovec` has a `__k_uintptr_t` base and a `__k_size_t` length; the layout on amd64 is the same.
 
