@@ -9,11 +9,9 @@ session, or decide to leave them.
    for the running one to finish its timeslice. The run queues are one FIFO per hart.
 3. **Affinity with every allowed hart busy** (item 13, line 206). The thread waits for a hart to free up instead of
    being queued on one that may run it. The same gap as the general queue-balancing `TODO`.
-4. **No `tmpfile` vnode operation** (item 24, line 381). `shmem` makes a hidden file with create and unlink. A
-   dedicated operation would save the round trip. Cosmetic; can wait.
-5. **No `ptrace` stops, no `CLD_TRAPPED`** (item 25, line 417). Job control is complete for signals; tracer stops
+4. **No `ptrace` stops, no `CLD_TRAPPED`** (item 25, line 417). Job control is complete for signals; tracer stops
    belong to a future `ptrace` design.
-6. **Device nodes cannot find their interface by `rdev`** (item 29, line 483). A node outside devfs opens with
+5. **Device nodes cannot find their interface by `rdev`** (item 29, line 483). A node outside devfs opens with
    `ENXIO`. Needs an `rdev` lookup and a `nodev` mount option. Nothing needs it yet.
 
 Not listed: the "Still to do" lines of the plan are all mlibc-side sysdeps, which the mlibc session covers.

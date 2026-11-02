@@ -374,11 +374,11 @@ The order inside this tier follows what is wanted first, not only cost.
       `pslab` page above that, up to `PATH_MAX - 1` bytes. `UNDONE:` the targets are not counted in the limits of the mount.
 24. ~~**Shared anonymous `mmap` and POSIX shared memory.**~~ *Done* (`shm_open` needs no kernel work).
     - `MAP_SHARED | MAP_ANONYMOUS` maps a file that no name leads to. `kernel/mm/shmem.c` (`vex/shmem.h`) keeps an internal tmpfs
-      that `vfs_create` makes, and makes the file with a name that it removes at once. The file takes its whole size from the commit
+      that `vfs_create` makes, and makes the file with `tmpfile`, so it never has a name. The file takes its whole size from the commit
       limit when the mapping appears (`ENOMEM` if it does not fit) and gives it back with the last reference. A part `munmap` returns
       nothing. `MAP_NORESERVE` has no effect on it.
     - The service names the `tmpfs` driver with a string and uses only `vfs_*`, `vnode_*` and `file_*`. A filesystem has no public
-      header (architecture.md). `UNDONE:` a `tmpfile` vnode operation would save the create and unlink.
+      header (architecture.md). `tmpfile` makes the hidden file with no name, so the create and the unlink are gone.
     - `shm_open` is a file in `/run/shm`, a `tmpfs` mount. The mount itself belongs to init and mlibc.
     - Tests: `ktest/test.shmem.c`.
 25. ~~**Job control.**~~ *Done* in the kernel. Decision: implement it. The existing pieces are `exit_to_user`, `pending_work`, `sched_kick`, `child_exited` and the
